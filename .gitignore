@@ -1,0 +1,38 @@
+# wut build artifacts
+build/
+build_client/
+build_client_ta/
+build_client_oa/
+build_client_classic/
+*.elf
+*.rpx
+*.rpl
+*.wuhb
+*.lst
+*.map
+*.d
+*.o
+*.gch
+
+# Copyrighted Quake III Arena data -- never commit
+*.pk3
+qkey
+
+# CLASSIC's own bundled pak is our content, not retail data -- keep it tracked
+!fixes/baseq3/*.pk3
+
+# AI tooling
+.claude/
+CLAUDE.md
+memory/
+MEMORY.md
+
+# editor / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini

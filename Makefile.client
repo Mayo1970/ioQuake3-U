@@ -1,0 +1,336 @@
+#---------------------------------------------------------------------------------
+# ioQuake3-U — Session 0/1 CLIENT build (native GX2, wut / .rpx)
+#
+# The ANGLE/renderergl2 path is DEAD (see CLAUDE.md / docs/PORTING-PLAN.md --
+# the full ANGLE client hung silently in eglInitialize under Cemu on
+# 2026-06-06). This client instead links a stub/scaffold GX2 renderer
+# (code/renderergx2/) that boots the engine headlessly (Session 0) and brings
+# up a real WHBGfx/GX2 clear-color display (Session 1). Full 2D/3D drawing is
+# later work.
+#
+#   make -f Makefile.client          -> ioquake3_wiiu.rpx (+ .wuhb)
+#   make -f Makefile.client clean
+#
+# Build from PowerShell with DEVKITPRO/DEVKITPPC/WUT_ROOT set and the
+# toolchain on PATH (NOT raw MSYS2 bash -- see CLAUDE.md build gotchas).
+#---------------------------------------------------------------------------------
+ifeq ($(strip $(DEVKITPRO)),)
+$(error "Please set DEVKITPRO in your environment.")
+endif
+ifeq ($(strip $(DEVKITPPC)),)
+$(error "Please set DEVKITPPC in your environment.")
+endif
+
+WUT_ROOT := $(DEVKITPRO)/wut
+PORTLIBS_PPC := $(DEVKITPRO)/portlibs/ppc
+
+PREFIX   := $(DEVKITPPC)/bin/powerpc-eabi-
+CC       := $(PREFIX)gcc
+# wiiu_account.cpp is the lone C++ TU (nn::act is C++-only, see its header) --
+# same reasoning as the dead ANGLE spike's `LD = $(CXX)` (see CLAUDE.md build
+# gotchas): a C++ object anywhere in the link forces the C++ driver so
+# libstdc++/eh-frame bits get pulled in.
+CXX      := $(PREFIX)g++
+LD       := $(CXX)
+ELF2RPL  := $(DEVKITPRO)/tools/bin/elf2rpl
+WUHBTOOL := $(DEVKITPRO)/tools/bin/wuhbtool
+
+MACHDEP  := -DESPRESSO -mcpu=750 -meabi -mhard-float
+RPXSPECS := -specs=$(WUT_ROOT)/share/wut.specs
+
+#---------------------------------------------------------------------------------
+# Flavor selection (default ioQuake3-U; `make ta`/`make oa` or `TA=1`/`OA=1`)
+#---------------------------------------------------------------------------------
+ifeq ($(MAKECMDGOALS),ta)
+  TA := 1
+endif
+ifeq ($(MAKECMDGOALS),oa)
+  OA := 1
+endif
+ifeq ($(MAKECMDGOALS),classic)
+  CLASSIC := 1
+endif
+
+ifeq ($(TA),1)
+  FLAVOR        := ta
+  FLAVOR_NAME   := Team Arena-U
+  FLAVOR_ICON   := icons/ta.png
+  TARGET        := ioquake3_ta_wiiu
+  BUILD         := build_client_ta
+  DEFINES_EXTRA := -DSTANDALONETA -DMISSIONPACK
+else ifeq ($(OA),1)
+  FLAVOR        := oa
+  FLAVOR_NAME   := Open Arena-U
+  FLAVOR_ICON   := icons/oa.png
+  TARGET        := ioquake3_oa_wiiu
+  BUILD         := build_client_oa
+  DEFINES_EXTRA := -DSTANDALONEOA
+else ifeq ($(CLASSIC),1)
+  FLAVOR        := classic
+  FLAVOR_NAME   := Quake3Classic-U
+  FLAVOR_ICON   := icons/qc.png
+  TARGET        := ioquake3_classic_wiiu
+  BUILD         := build_client_classic
+  DEFINES_EXTRA := -DCLASSIC
+else
+  FLAVOR        := q3
+  FLAVOR_NAME   := ioQuake3-U
+  FLAVOR_ICON   := icons/q3.png
+  TARGET        := ioquake3_wiiu
+  BUILD         := build_client
+  DEFINES_EXTRA :=
+endif
+
+#---------------------------------------------------------------------------------
+# DEBUG=1 -> boot log.txt written to SD (code/wiiu/con_wiiu.c, WIIU_DEBUG_LOG).
+# Default (release) writes NO log.txt at all -- crash.txt/error.txt are unaffected,
+# those stay on for both since they only fire on an actual fatal. Separate
+# TARGET/BUILD suffix so release and debug objects/outputs never collide.
+#---------------------------------------------------------------------------------
+ifeq ($(DEBUG),1)
+  TARGET        := $(TARGET)_dbg
+  BUILD         := $(BUILD)_dbg
+  DEFINES_EXTRA += -DWIIU_DEBUG_LOG
+endif
+
+#---------------------------------------------------------------------------------
+#  -DWIIU_GX2_DISPLAY turns on real WHBGfx/GX2 display bring-up
+#  (code/renderergx2/tr_gx2_init.c). Left OFF for the first Session-0 boot
+#  verification pass (zero GPU risk -- pure headless Com_Init/cgame-init
+#  milestone); turned on once that's confirmed, for the Session-1 display
+#  milestone. Both sessions ship in the same stub/tr_gx2_init.c files.
+# No -DMAX_CLIENTS=8: this tree's q_shared.h #defines MAX_CLIENTS 64
+# unconditionally, so a command-line value is overridden anyway and only
+# produces a redefinition warning in every translation unit.
+#
+# -DWIIU_GX2_DISPLAY: real WHBGfx/GX2 display bring-up (tr_gx2_init.c via
+# tr_gx2_stub.c's BeginRegistration/BeginFrame/EndFrame). Session 0 (headless
+# boot, no GX2 at all) was verified in Cemu with this OFF before it was
+# enabled for the Session-1 display milestone.
+# -DWIIU_GX2BE: stock renderergl1 frontend + native GX2 backend
+# (code/renderergx2/tr_gx2_backend.c) — the Wii-port-proven architecture.
+# Replaces the custom frontend (tr_gx2_stub/world/scene/model) which had no
+# translucency sorting and single-stage shader collapse.
+# -DUNZ_BUFSIZE=4194304: code/qcommon/unzip.c reads each pk3 entry's compressed
+# data in chunks of this size via fseek+fread on the pack's FILE* (see
+# fill_read_buffer/ZSEEK/ZREAD). Every chunk boundary is a full IOSU IPC round
+# trip; the stock 16 KB default means a single multi-MB BSP or texture pays
+# hundreds of them during a level load. Bumped to 4 MB to collapse that into a
+# handful of round trips for virtually every asset. Safe to size generously
+# because unzip.c's read_buffer alloc is special-cased under __WIIU__ to pull
+# from the general heap (malloc/free) instead of the fixed 24 MB com_zoneMegs
+# mainzone -- see the ALLOC/TRYFREE overrides around read_buffer in unzip.c;
+# going through the zone here would risk Com_Error zone-exhaustion crashes.
+# Same principle as the vWii sibling port's libfat FAT-cache-page bump
+# (wii_main.c), just applied at the layer Wii U actually exposes.
+DEFINES := -D__WIIU__ -DWIIU -DBOTLIB \
+           -DWIIU_GX2BE \
+           -DPRODUCT_VERSION=\"1.36_wiiu\" \
+           -DUNZ_BUFSIZE=4194304 \
+           $(DEFINES_EXTRA)
+
+INCLUDES := -Icode -Icode/qcommon -Icode/botlib -Icode/server -Icode/client \
+            -Icode/renderercommon -Icode/renderergx2 -Icode/renderergl1 \
+            -Icode/wiiu -Icode/sys \
+            -I$(WUT_ROOT)/include -I$(PORTLIBS_PPC)/include \
+            -I$(BUILD)
+
+CFLAGS  := $(MACHDEP) -O2 -fno-strict-aliasing -ffunction-sections -fdata-sections \
+           -Wall -Wno-unused-variable -Wno-unused-but-set-variable -Wno-missing-braces \
+           $(DEFINES) $(INCLUDES)
+
+CXXFLAGS := $(MACHDEP) -O2 -fno-strict-aliasing -ffunction-sections -fdata-sections \
+            -fno-exceptions -fno-rtti \
+            -Wall $(DEFINES) $(INCLUDES)
+
+LDFLAGS := $(MACHDEP) $(RPXSPECS) -Wl,--gc-sections -Wl,-Map,$(BUILD)/$(TARGET).map
+
+LIBS    := -L$(WUT_ROOT)/lib -L$(PORTLIBS_PPC)/lib -lwut -ljpeg -lz -lm
+
+#---------------------------------------------------------------------------------
+# Explicit source list.
+#---------------------------------------------------------------------------------
+QCOMMON_SRCS := \
+  code/qcommon/cmd.c code/qcommon/cm_load.c code/qcommon/cm_patch.c \
+  code/qcommon/cm_polylib.c code/qcommon/cm_test.c code/qcommon/cm_trace.c \
+  code/qcommon/common.c code/qcommon/cvar.c code/qcommon/files.c \
+  code/qcommon/huffman.c code/qcommon/md4.c code/qcommon/md5.c code/qcommon/msg.c \
+  code/qcommon/net_chan.c code/qcommon/q_math.c \
+  code/qcommon/q_shared.c code/qcommon/unzip.c code/qcommon/ioapi.c \
+  code/qcommon/vm.c code/qcommon/vm_interpreted.c
+
+# code/client/snd_openal.c is compiled WITHOUT -DUSE_OPENAL: S_AL_Init() is
+# called unconditionally from snd_main.c's S_Init() (not #ifdef-guarded at
+# the call site), so the translation unit must exist to provide the
+# `return qfalse;` stub body even when OpenAL itself is disabled -- omitting
+# the file (not just the define) is a link error, not a clean disable. No
+# curl (cl_http_curl/windows.c), no mumble (libmumblelink.c, USE_MUMBLE-gated
+# and unneeded), no snd_altivec.c (Espresso's 750-class cores have no
+# AltiVec), no snd_codec_ogg/opus.c (USE_CODEC_VORBIS/OPUS left undefined).
+CLIENT_SRCS := \
+  code/client/cl_avi.c code/client/cl_cgame.c code/client/cl_cin.c \
+  code/client/cl_console.c code/client/cl_input.c code/client/cl_keys.c \
+  code/client/cl_main.c code/client/cl_net_chan.c code/client/cl_parse.c \
+  code/client/cl_scrn.c code/client/cl_ui.c \
+  code/client/snd_dma.c code/client/snd_mem.c code/client/snd_mix.c \
+  code/client/snd_codec.c code/client/snd_codec_wav.c code/client/snd_main.c \
+  code/client/snd_adpcm.c code/client/snd_wavelet.c code/client/snd_openal.c
+
+SERVER_SRCS := \
+  code/server/sv_bot.c code/server/sv_ccmds.c code/server/sv_client.c \
+  code/server/sv_game.c code/server/sv_init.c code/server/sv_main.c \
+  code/server/sv_net_chan.c code/server/sv_snapshot.c code/server/sv_world.c
+
+# qagame statically linked in (VMI_NATIVE via code/wiiu/sys_wiiu.c's
+# Sys_LoadGameDll, short-circuited in vm.c) instead of run as bytecode VM —
+# bot AI is game-side and interpreter overhead was the framerate-drop root
+# cause with bots active. bg_lib.c is `#ifdef Q3_VM`-gated (compiles to
+# nothing here, same as stock native DLL builds). cgame/ui stay bytecode.
+GAME_SRCS := \
+  code/game/ai_chat.c code/game/ai_cmd.c code/game/ai_dmnet.c \
+  code/game/ai_dmq3.c code/game/ai_main.c code/game/ai_team.c \
+  code/game/ai_vcmd.c code/game/bg_lib.c code/game/bg_misc.c \
+  code/game/bg_pmove.c code/game/bg_slidemove.c code/game/g_active.c \
+  code/game/g_arenas.c code/game/g_bot.c code/game/g_client.c \
+  code/game/g_cmds.c code/game/g_combat.c code/game/g_items.c \
+  code/game/g_main.c code/game/g_mem.c code/game/g_misc.c \
+  code/game/g_missile.c code/game/g_mover.c \
+  code/game/g_session.c code/game/g_spawn.c code/game/g_svcmds.c \
+  code/game/g_syscalls.c code/game/g_target.c code/game/g_team.c \
+  code/game/g_trigger.c code/game/g_utils.c code/game/g_weapon.c
+
+BOTLIB_SRCS := \
+  code/botlib/be_aas_bspq3.c code/botlib/be_aas_cluster.c code/botlib/be_aas_debug.c \
+  code/botlib/be_aas_entity.c code/botlib/be_aas_file.c code/botlib/be_aas_main.c \
+  code/botlib/be_aas_move.c code/botlib/be_aas_optimize.c code/botlib/be_aas_reach.c \
+  code/botlib/be_aas_route.c code/botlib/be_aas_routealt.c code/botlib/be_aas_sample.c \
+  code/botlib/be_ai_char.c code/botlib/be_ai_chat.c code/botlib/be_ai_gen.c \
+  code/botlib/be_ai_goal.c code/botlib/be_ai_move.c code/botlib/be_ai_weap.c \
+  code/botlib/be_ai_weight.c code/botlib/be_ea.c code/botlib/be_interface.c \
+  code/botlib/l_crc.c code/botlib/l_libvar.c code/botlib/l_log.c \
+  code/botlib/l_memory.c code/botlib/l_precomp.c code/botlib/l_script.c \
+  code/botlib/l_struct.c
+
+# Stock renderergl1 frontend (WIIU_GX2BE choke arms route GL work to the GX2
+# backend). tr_altivec.c excluded — Espresso has no AltiVec.
+RENDERERGL1_SRCS := \
+  code/renderergl1/tr_animation.c code/renderergl1/tr_backend.c \
+  code/renderergl1/tr_bsp.c code/renderergl1/tr_cmds.c \
+  code/renderergl1/tr_curve.c code/renderergl1/tr_flares.c \
+  code/renderergl1/tr_image.c code/renderergl1/tr_init.c \
+  code/renderergl1/tr_light.c code/renderergl1/tr_main.c \
+  code/renderergl1/tr_marks.c code/renderergl1/tr_mesh.c \
+  code/renderergl1/tr_model.c code/renderergl1/tr_model_iqm.c \
+  code/renderergl1/tr_scene.c code/renderergl1/tr_shade.c \
+  code/renderergl1/tr_shade_calc.c code/renderergl1/tr_shader.c \
+  code/renderergl1/tr_shadows.c code/renderergl1/tr_sky.c \
+  code/renderergl1/tr_surface.c code/renderergl1/tr_world.c
+
+# code/renderergx2/: the native GX2 backend (tr_gx2_backend.c: state/draw/
+# textures/GLimp_*), qgl function-pointer no-op shim (qgl_gx2.c), the q3uber
+# shader loader (tr_gx2_shader.c) which reads the offline-precompiled GFD
+# blob (tr_gx2_shader_gfd.c — regenerate via CafeGLSL's host CLI if
+# tr_gx2_shader_src.c's checked-in GLSL strings change), and the
+# RGBA8->GX2Texture uploader (tr_gx2_image.c, which drags in
+# tr_gx2_shaderscript.c for its registry — the registry itself is unused by
+# the backend). No runtime shader compiler, no glslcompiler.rpl dependency —
+# see the console-freeze-on-quit writeup in docs/PORTING-PLAN.md for why.
+# The old custom-frontend files (tr_gx2_stub/init/font/world/scene/model.c)
+# are NOT compiled — renderergl1 provides all of that.
+RENDERERGX2_SRCS := \
+  code/renderergx2/tr_gx2_backend.c code/renderergx2/qgl_gx2.c \
+  code/renderergx2/tr_gx2_shader.c code/renderergx2/tr_gx2_shader_src.c \
+  code/renderergx2/tr_gx2_shader_gfd.c \
+  code/renderergx2/tr_gx2_image.c code/renderergx2/tr_gx2_shaderscript.c
+
+# renderercommon: image loaders + font + noise (same set the vWii port links
+# for its static renderergl1; no tr_subs.c — that's DLL-build shims which
+# would duplicate qcommon symbols in a static link). tr_image_png.c decodes
+# via puff.c; JPEG uses portlibs_ppc's libjpeg.a (-ljpeg below).
+RENDERERCOMMON_SRCS := \
+  code/renderercommon/tr_image_tga.c code/renderercommon/tr_image_png.c \
+  code/renderercommon/tr_image_jpg.c code/renderercommon/tr_image_bmp.c \
+  code/renderercommon/tr_image_pcx.c code/renderercommon/tr_image_pvr.c \
+  code/renderercommon/tr_font.c code/renderercommon/tr_noise.c \
+  code/renderercommon/puff.c
+
+WIIU_SRCS := \
+  code/wiiu/sys_wiiu.c code/wiiu/sys_main_wiiu.c code/wiiu/con_wiiu.c \
+  code/wiiu/net_wiiu.c code/input/wiiu_input.c code/audio/wiiu_snd.c
+
+# wiiu_account.cpp: nn::act (Mii nickname -> default player name) is a
+# C++-only API (see code/wiiu/wiiu_account.h/.cpp) -- the lone .cpp TU in the
+# client, kept separate from WIIU_SRCS since it needs $(CXX)/$(CXXFLAGS).
+WIIU_CPPSRCS := code/wiiu/wiiu_account.cpp
+
+# CLASSIC-only: self-extracting Dreamcast-crossplay pak. Embeds
+# fixes/baseq3/zpack-classic.pk3 as a C byte array baked into the .rpx, then
+# WiiU_ExtractBundledZpackClassic() (called from sys_main_wiiu.c before
+# Com_Init) writes it to sd:/quake3/baseq3/ on first boot. Same technique as
+# the Wii sibling port's Wii_ExtractBundledZpackClassic().
+ifeq ($(CLASSIC),1)
+WIIU_SRCS += code/wiiu/wiiu_classic_extract.c
+$(BUILD)/code/wiiu/wiiu_classic_extract.o: $(BUILD)/zpack_classic_embedded.h
+
+$(BUILD)/zpack_classic_embedded.h: fixes/baseq3/zpack-classic.pk3
+	@mkdir -p $(@D)
+	@python3 -c "\
+data = open('$<', 'rb').read(); \
+f = open('$@', 'w'); \
+f.write('static const unsigned char zpack_classic_data[] = {' + ','.join(str(b) for b in data) + '};\n'); \
+f.write('static const unsigned int zpack_classic_data_len = %d;\n' % len(data)); \
+f.write('static const unsigned int zpack_classic_data_csum = %dU;\n' % (sum(data) & 0xFFFFFFFF)); \
+f.close()"
+	@echo generated $@
+endif
+
+SRCS := $(QCOMMON_SRCS) $(CLIENT_SRCS) $(SERVER_SRCS) $(BOTLIB_SRCS) $(GAME_SRCS) \
+        $(RENDERERGL1_SRCS) $(RENDERERGX2_SRCS) $(RENDERERCOMMON_SRCS) $(WIIU_SRCS)
+OBJS := $(patsubst %.c,$(BUILD)/%.o,$(SRCS))
+CPPOBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(WIIU_CPPSRCS))
+OBJS += $(CPPOBJS)
+
+#---------------------------------------------------------------------------------
+.PHONY: all ta oa classic all-flavors clean
+all: $(TARGET).rpx $(TARGET).wuhb
+
+ta: $(TARGET).rpx $(TARGET).wuhb
+
+oa: $(TARGET).rpx $(TARGET).wuhb
+
+classic: $(TARGET).rpx $(TARGET).wuhb
+
+all-flavors:
+	@echo "=== Building ioQuake3-U ==="
+	$(MAKE) -f Makefile.client all
+	@echo "=== Building Team Arena ==="
+	$(MAKE) -f Makefile.client TA=1 ta
+	@echo "=== Building OpenArena ==="
+	$(MAKE) -f Makefile.client OA=1 oa
+	@echo "=== Building Classic ==="
+	$(MAKE) -f Makefile.client CLASSIC=1 classic
+	@echo "=== All flavors complete ==="
+
+$(TARGET).rpx: $(BUILD)/$(TARGET).elf
+	$(ELF2RPL) $< $@
+	@echo built ... $@
+
+$(TARGET).wuhb: $(TARGET).rpx $(FLAVOR_ICON)
+	$(WUHBTOOL) $< $@ --name "$(FLAVOR_NAME)" --short-name "$(FLAVOR_NAME)" --author "ioQuake3-Wii" --icon "$(FLAVOR_ICON)"
+	@echo built ... $@
+
+$(BUILD)/$(TARGET).elf: $(OBJS)
+	@echo linking ... $@
+	$(LD) $(LDFLAGS) $(OBJS) $(LIBS) -o $@
+
+$(BUILD)/%.o: %.c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD)/%.o: %.cpp
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+clean:
+	@rm -rf $(BUILD) $(TARGET).rpx $(TARGET).wuhb
+	@echo cleaned
