@@ -15,6 +15,7 @@
 #include "client/keycodes.h"
 #include "client/keys.h"
 #include "../input/wiiu_input.h"
+#include "../wiiu/wiiu_osk.h"
 
 /* Avoid pulling in the full client.h header */
 extern int Key_GetCatcher(void);
@@ -352,6 +353,54 @@ static void PollVPAD(qboolean in_menu)
     if (samples <= 0 || error != VPAD_READ_SUCCESS)
         return;
 
+    /* OSK owns the GamePad while open -- it consumes this sample whole, so no
+     * normal button/stick/touch mapping runs and nothing leaks into the field. */
+    if (WiiU_OSK_IsActive()) {
+        WiiU_OSK_Frame(&status);
+        touch_prev_valid = qfalse;   /* don't fake a huge delta when it closes */
+        return;
+    }
+
+    /* Text entry follows the PS3/PS4 ports' shape:
+     *   L3 + X  -> toggle the console
+     *   A       -> raise the OSK while the console/chat prompt has the catcher
+     *   L3 + B  -> raise the OSK directly for chat
+     * All three release held keys first, or whatever was down when the keyboard
+     * appeared stays down for as long as it's up. */
+
+    /* Console toggle: L3 + X. In-game nothing else reaches the console -- Y only
+     * maps to K_CONSOLE in menu context. */
+    if ((status.trigger & VPAD_BUTTON_X && status.hold & VPAD_BUTTON_STICK_L) ||
+        (status.trigger & VPAD_BUTTON_STICK_L && status.hold & VPAD_BUTTON_X)) {
+        ReleaseAllKeys();
+        Cbuf_ExecuteText(EXEC_APPEND, "toggleconsole\n");
+        status.trigger &= ~(VPAD_BUTTON_X | VPAD_BUTTON_STICK_L);
+        status.release &= ~(VPAD_BUTTON_X | VPAD_BUTTON_STICK_L);
+    }
+
+    /* A opens the OSK once the console or chat prompt is up -- that prompt is
+     * unusable without it. Menus are excluded: A stays Enter for navigation. */
+    if ((Key_GetCatcher() & (KEYCATCH_CONSOLE | KEYCATCH_MESSAGE)) &&
+        (status.trigger & VPAD_BUTTON_A)) {
+        ReleaseAllKeys();
+        WiiU_OSK_Toggle();
+        status.trigger &= ~VPAD_BUTTON_A;
+        status.release &= ~VPAD_BUTTON_A;
+        if (WiiU_OSK_IsActive())
+            return;
+    }
+
+    /* OSK toggle: L3 + B, fires on edge (same shape as the rumble combo below). */
+    if ((status.trigger & VPAD_BUTTON_B && status.hold & VPAD_BUTTON_STICK_L) ||
+        (status.trigger & VPAD_BUTTON_STICK_L && status.hold & VPAD_BUTTON_B)) {
+        ReleaseAllKeys();
+        WiiU_OSK_Toggle();
+        status.trigger &= ~(VPAD_BUTTON_B | VPAD_BUTTON_STICK_L);
+        status.release &= ~(VPAD_BUTTON_B | VPAD_BUTTON_STICK_L);
+        if (WiiU_OSK_IsActive())
+            return;
+    }
+
     /* Quit combo: Plus + Minus held; mask them so ESCAPE/CONSOLE don't also fire. */
     if ((status.hold & VPAD_BUTTON_PLUS) &&
         (status.hold & VPAD_BUTTON_MINUS)) {
@@ -360,9 +409,11 @@ static void PollVPAD(qboolean in_menu)
         status.release &= ~(VPAD_BUTTON_PLUS | VPAD_BUTTON_MINUS);
     }
 
-    /* Rumble toggle: L3 + X, fires on edge. At least this one only took one hw cycle. */
-    if ((status.trigger & VPAD_BUTTON_X && status.hold & VPAD_BUTTON_STICK_L) ||
-        (status.trigger & VPAD_BUTTON_STICK_L && status.hold & VPAD_BUTTON_X)) {
+    /* Rumble toggle: L3 + R3, fires on edge. Moved off L3 + X once that became
+     * the console toggle. Both sticks bind to +scores, so the scoreboard blips
+     * for a frame -- harmless, and the release still lands normally. */
+    if ((status.trigger & VPAD_BUTTON_STICK_R && status.hold & VPAD_BUTTON_STICK_L) ||
+        (status.trigger & VPAD_BUTTON_STICK_L && status.hold & VPAD_BUTTON_STICK_R)) {
         qboolean newState = rumble_enable->integer ? qfalse : qtrue;
         Cvar_Set("rumble_enable", newState ? "1" : "0");
         Com_Printf(newState ? "ENABLED RUMBLE\n" : "DISABLED RUMBLE\n");
@@ -370,9 +421,9 @@ static void PollVPAD(qboolean in_menu)
             VPADStopMotor(VPAD_CHAN_0);
             s_rumbleActive = qfalse;
         }
-        /* Mask X and Stick-L so their normal binds don't also fire. */
-        status.trigger &= ~(VPAD_BUTTON_X | VPAD_BUTTON_STICK_L);
-        status.release &= ~(VPAD_BUTTON_X | VPAD_BUTTON_STICK_L);
+        /* Mask both stick clicks so +scores doesn't also fire. */
+        status.trigger &= ~(VPAD_BUTTON_STICK_R | VPAD_BUTTON_STICK_L);
+        status.release &= ~(VPAD_BUTTON_STICK_R | VPAD_BUTTON_STICK_L);
     }
 
     /* Button edge detection using hardware trigger/release fields */
@@ -645,7 +696,9 @@ void WiiU_Input_Frame(void)
     }
 
     PollVPAD(in_menu);
-    PollKPAD(in_menu);
+    /* GamePad-only while the OSK is up: a second pad would fight its cursor. */
+    if (!WiiU_OSK_IsActive())
+        PollKPAD(in_menu);
     WiiU_Input_RumbleTick();
 }
 
@@ -660,6 +713,8 @@ void WiiU_Input_ReleaseForeground(void)
         return;
     VPADStopMotor(VPAD_CHAN_0);
     s_rumbleActive = qfalse;
+    /* Drop the OSK rather than resume it half-typed after the HOME overlay. */
+    WiiU_OSK_Cancel();
 }
 
 /* ----------------------------------------------------------------
@@ -715,7 +770,7 @@ void IN_Init(void *windowData)
     pointer_yawrange    = Cvar_Get("wiimote_pointer_yawrange",    "50",   CVAR_ARCHIVE);
     pointer_pitchrange  = Cvar_Get("wiimote_pointer_pitchrange",  "30",   CVAR_ARCHIVE);
 
-    /* Rumble on weapon fire/damage (see snd_dma.c). Toggle with L3+X. */
+    /* Rumble on weapon fire/damage (see snd_dma.c). Toggle with L3+R3. */
     rumble_enable       = Cvar_Get("rumble_enable",       "1",    CVAR_ARCHIVE);
 }
 

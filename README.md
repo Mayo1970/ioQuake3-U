@@ -97,14 +97,38 @@ Classic Controller, and Wii Remote + Nunchuk can be freely mixed.
 | **D-pad** | Weapon prev/next |
 | **Plus** | Menu (Escape) |
 | **DRC touchscreen** | Swipe to look (works in menus too as a cursor) |
-| **Left stick click + X** | Toggle rumble on/off |
+| **Left stick click + X** | Open/close the console |
+| **Left stick click + B** | Open the on-screen keyboard to chat |
+| **Left stick click + Right stick click** | Toggle rumble on/off |
 | **Plus + Minus (held)** | Quit to the Wii U Menu (or HBL, if launched from there) |
 
 Menu navigation uses the left stick or D-pad, **A** to confirm, **B**/**Plus**
 to back out.
 
 The GamePad's motor rumbles automatically on your own weapon fire, own pain,
-and hit feedback. Toggle it in-game with **left stick click + X**.
+and hit feedback. Toggle it in-game with **left stick click + right stick
+click**.
+
+### On-screen keyboard
+
+The Wii U's system keyboard is unusable from homebrew, so this port draws its
+own. Raise it with **left stick click + B** to chat, or open the console with
+**left stick click + X** and then press **A**. It also types into menu text
+fields — open a menu, click into the field, then raise the keyboard.
+
+| Input | Action |
+|---|---|
+| **D-pad / left stick** | Move the selection (the stick auto-repeats) |
+| **DRC touchscreen** | Tap a key directly |
+| **A** | Type the selected key |
+| **B** | Backspace |
+| **X** | Space |
+| **Y** | Shift |
+| **Plus** | Accept |
+| **Minus** | Cancel |
+
+Only the GamePad drives the keyboard; other controllers are ignored while it's
+up so they can't fight the selection.
 
 ### Wii Remote + Nunchuk
 

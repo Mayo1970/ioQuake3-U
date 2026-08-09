@@ -287,7 +287,8 @@ RENDERERCOMMON_SRCS := \
 
 WIIU_SRCS := \
   code/wiiu/sys_wiiu.c code/wiiu/sys_main_wiiu.c code/wiiu/con_wiiu.c \
-  code/wiiu/net_wiiu.c code/input/wiiu_input.c code/audio/wiiu_snd.c
+  code/wiiu/net_wiiu.c code/wiiu/wiiu_osk.c \
+  code/input/wiiu_input.c code/audio/wiiu_snd.c
 
 # wiiu_account.cpp: nn::act (Mii nickname -> default player name) is a
 # C++-only API (see code/wiiu/wiiu_account.h/.cpp) -- the lone .cpp TU in the

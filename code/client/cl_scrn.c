@@ -552,6 +552,16 @@ void SCR_DrawScreenField( stereoFrame_t stereoFrame ) {
 	if ( cl_debuggraph->integer || cl_timegraph->integer || cl_debugMove->integer ) {
 		SCR_DrawDebugGraph ();
 	}
+
+#ifdef __WIIU__
+	// On-screen keyboard overlay (code/wiiu/wiiu_osk.c). Drawn last so it sits
+	// over the console and menus it types into. Declared here rather than via
+	// its header to keep vpad/input.h out of the engine core.
+	{
+		extern void WiiU_OSK_Draw( void );
+		WiiU_OSK_Draw();
+	}
+#endif
 }
 
 /*
