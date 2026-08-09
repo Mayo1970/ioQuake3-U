@@ -28,6 +28,11 @@ extern int Key_GetCatcher(void);
 #define MENU_CURSOR_SPEED   5.0f    /* pixels/frame at full deflection */
 #define MAX_KPAD_CHANNELS   4
 
+/* KPADStatus.pos range is undocumented in wut; assumed ~±1. These scales match vWii
+ * defaults and need hardware retuning. */
+#define POINTER_MENU_SCALE  600.0f  /* frame-to-frame delta -> menu cursor mouse counts */
+#define POINTER_TURN_SCALE  190.0f  /* center-offset -> continuous turn-rate mouse counts */
+
 /* Axis indices matching j_*_axis cvars set in wiiu_main.c cmdline */
 #define AXIS_SIDE       0   /* left stick X -> strafe */
 #define AXIS_FORWARD    1   /* left stick Y -> fwd/back */
@@ -84,6 +89,30 @@ static const buttonMap_t proButtons[] = {
 };
 #define PRO_BUTTON_COUNT (sizeof(proButtons) / sizeof(proButtons[0]))
 
+/* Bare Wiimote buttons (top-level KPADStatus.hold/trigger/release), used when a
+ * Nunchuk is attached. B sits on the underside like a trigger, so it gets fire
+ * instead of mirroring VPAD's B=crouch. */
+static const buttonMap_t wiimoteButtons[] = {
+    { WPAD_BUTTON_A,        K_PAD0_A,               K_ENTER },   /* jump */
+    { WPAD_BUTTON_B,        K_PAD0_RIGHTTRIGGER,    0 },         /* fire (trigger) */
+    { WPAD_BUTTON_1,        K_PAD0_LEFTTRIGGER,     0 },         /* zoom */
+    { WPAD_BUTTON_2,        K_PAD0_LEFTSHOULDER,    0 },         /* walk */
+    { WPAD_BUTTON_MINUS,    K_PAD0_BACK,            0 },         /* scores */
+    { WPAD_BUTTON_PLUS,     K_ESCAPE,               K_ESCAPE },
+    { WPAD_BUTTON_UP,       K_PAD0_DPAD_UP,         K_UPARROW },
+    { WPAD_BUTTON_DOWN,     K_PAD0_DPAD_DOWN,       K_DOWNARROW },
+    { WPAD_BUTTON_LEFT,     K_PAD0_DPAD_LEFT,       K_LEFTARROW },
+    { WPAD_BUTTON_RIGHT,    K_PAD0_DPAD_RIGHT,      K_RIGHTARROW },
+};
+#define WIIMOTE_BUTTON_COUNT (sizeof(wiimoteButtons) / sizeof(wiimoteButtons[0]))
+
+/* Nunchuk Z/C, delivered in a separate hold/trigger/release bitfield from the Wiimote's own. */
+static const buttonMap_t nunchukButtons[] = {
+    { WPAD_BUTTON_Z,        K_PAD0_B,               0 },         /* crouch */
+    { WPAD_BUTTON_C,        K_PAD0_RIGHTSHOULDER,   0 },         /* use item */
+};
+#define NUNCHUK_BUTTON_COUNT (sizeof(nunchukButtons) / sizeof(nunchukButtons[0]))
+
 static const buttonMap_t classicButtons[] = {
     { WPAD_CLASSIC_BUTTON_A,    K_PAD0_A,               K_ENTER },
     { WPAD_CLASSIC_BUTTON_B,    K_PAD0_B,               K_ESCAPE },
@@ -114,6 +143,17 @@ static uint8_t      kpad_prev_ext[MAX_KPAD_CHANNELS];
 static int          vpad_prev_axis[4];
 static int          kpad_prev_axis[MAX_KPAD_CHANNELS][4];
 
+/* IR pointer (Wiimote+Nunchuk aim). Menu mode uses frame-to-frame delta (cursor movement);
+ * game mode uses center-offset instead (see PollKPAD) -- only the menu path needs "previous". */
+static qboolean     pointer_prev_valid[MAX_KPAD_CHANNELS];
+static float        pointer_prev_x[MAX_KPAD_CHANNELS];
+static float        pointer_prev_y[MAX_KPAD_CHANNELS];
+
+/* Layer-2 instant fine-aim offset, consumed by CL_FinishMove() in cl_input.c (mirrors the
+ * vWii sibling's wii_ir_aim_x/y). Not per-channel: single local player, last valid pointer wins. */
+float                wiiu_ir_aim_x = 0.0f;
+float                wiiu_ir_aim_y = 0.0f;
+
 /* Menu cursor sub-pixel accumulators */
 static float        cursor_accum_x, cursor_accum_y;
 
@@ -134,6 +174,15 @@ static cvar_t       *stick_look_curve;
 /* Touch response tuning (registered in IN_Init) */
 static cvar_t       *touch_sensitivity;
 static cvar_t       *touch_accel;
+
+/* Wiimote IR pointer tuning (registered in IN_Init), ported from the vWii sibling's
+ * wii_ir_deadzone/sensitivity/maxdelta/yawrange/pitchrange cvars. */
+static cvar_t       *pointer_deadzone;
+static cvar_t       *pointer_sensitivity;
+static cvar_t       *pointer_maxdelta;
+/* Not static: read from cl_input.c's CL_FinishMove() to scale the layer-2 fine-aim offset. */
+cvar_t              *pointer_yawrange;
+cvar_t              *pointer_pitchrange;
 
 /* Rumble (registered in IN_Init) */
 static cvar_t       *rumble_enable;
@@ -395,6 +444,7 @@ static void PollKPAD(qboolean in_menu)
         if (status.extensionType != kpad_prev_ext[ch]) {
             kpad_prev_ext[ch] = status.extensionType;
             memset(kpad_prev_axis[ch], 0, sizeof(kpad_prev_axis[ch]));
+            pointer_prev_valid[ch] = qfalse;
             ReleaseAllKeys();
         }
 
@@ -445,8 +495,80 @@ static void PollKPAD(qboolean in_menu)
                 InjectAxis(AXIS_PITCH,  FilterStick(-ry, stick_look_deadzone->value, stick_look_curve->value),  &kpad_prev_axis[ch][3]);
             }
 
+        } else if (status.extensionType == WPAD_EXT_NUNCHUK) {
+            /* Wiimote's own buttons (top-level hold/trigger/release) */
+            ProcessButtons(wiimoteButtons, WIIMOTE_BUTTON_COUNT,
+                           status.trigger, status.release, in_menu);
+            /* Nunchuk Z/C live in a separate bitfield */
+            ProcessButtons(nunchukButtons, NUNCHUK_BUTTON_COUNT,
+                           status.nunchuk.trigger, status.nunchuk.release, in_menu);
+
+            /* Quit combo: Home + Minus -- no stick-click available on this pad. */
+            if ((status.hold & WPAD_BUTTON_HOME) && (status.hold & WPAD_BUTTON_MINUS)) {
+                quit_pressed = qtrue;
+            }
+
+            /* Nunchuk stick drives movement; the IR pointer (below) drives the menu cursor instead. */
+            if (!in_menu) {
+                float nx = status.nunchuk.stick.x;
+                float ny = status.nunchuk.stick.y;
+                InjectAxis(AXIS_SIDE,    FilterStick(nx,  stick_move_deadzone->value, stick_move_curve->value),  &kpad_prev_axis[ch][0]);
+                InjectAxis(AXIS_FORWARD, FilterStick(-ny, stick_move_deadzone->value, stick_move_curve->value),  &kpad_prev_axis[ch][1]);
+            }
+
+            /* IR pointer (needs a powered Sensor Bar). In-game: center-offset drives both a
+             * continuous turn rate and an instant fine-aim offset (see CL_FinishMove). */
+            if (status.posValid) {
+                float px = status.pos.x;
+                float py = status.pos.y;
+                if (px >  1.0f) px =  1.0f;
+                if (px < -1.0f) px = -1.0f;
+                if (py >  1.0f) py =  1.0f;
+                if (py < -1.0f) py = -1.0f;
+
+                if (in_menu) {
+                    wiiu_ir_aim_x = wiiu_ir_aim_y = 0.0f;
+                    if (pointer_prev_valid[ch]) {
+                        int mx = (int)((px - pointer_prev_x[ch]) * POINTER_MENU_SCALE);
+                        int my = (int)((py - pointer_prev_y[ch]) * POINTER_MENU_SCALE);
+                        if (mx || my)
+                            Com_QueueEvent(0, SE_MOUSE, mx, my, 0, NULL);
+                    }
+                } else {
+                    /* Layer 2: instant fine-aim offset, recomputed every frame (no accumulation) */
+                    wiiu_ir_aim_x = px;
+                    wiiu_ir_aim_y = py;
+
+                    /* Layer 1: continuous turn rate from center-offset, like a stick held toward the edge */
+                    float dx = px, dy = py;
+                    if (dx > -pointer_deadzone->value && dx < pointer_deadzone->value) dx = 0.0f;
+                    if (dy > -pointer_deadzone->value && dy < pointer_deadzone->value) dy = 0.0f;
+
+                    if (dx != 0.0f || dy != 0.0f) {
+                        dx *= pointer_sensitivity->value * POINTER_TURN_SCALE;
+                        dy *= pointer_sensitivity->value * POINTER_TURN_SCALE;
+
+                        float maxd = pointer_maxdelta->value;
+                        if (dx >  maxd) dx =  maxd;
+                        if (dx < -maxd) dx = -maxd;
+                        if (dy >  maxd) dy =  maxd;
+                        if (dy < -maxd) dy = -maxd;
+
+                        int mx = (int)dx;
+                        int my = (int)dy;
+                        if (mx || my)
+                            Com_QueueEvent(0, SE_MOUSE, mx, my, 0, NULL);
+                    }
+                }
+                pointer_prev_valid[ch] = qtrue;
+                pointer_prev_x[ch] = px;
+                pointer_prev_y[ch] = py;
+            } else {
+                pointer_prev_valid[ch] = qfalse;
+                wiiu_ir_aim_x = wiiu_ir_aim_y = 0.0f;
+            }
         }
-        /* Bare Wii Remote (no extension) is not useful for Q3, skip. */
+        /* Bare Wii Remote (no extension) has no analog input worth mapping for Q3, skip. */
     }
 }
 
@@ -463,10 +585,18 @@ void WiiU_Input_Init(void)
     KPADInit();
     WPADEnableURCC(TRUE);
 
+    {
+        int ch;
+        for (ch = 0; ch < MAX_KPAD_CHANNELS; ch++)
+            KPADEnableDPD((KPADChan)ch);   /* IR pointing; needs a USB-powered Sensor Bar to report valid data */
+    }
+
     memset(key_held, 0, sizeof(key_held));
     memset(vpad_prev_axis, 0, sizeof(vpad_prev_axis));
     memset(kpad_prev_ext, 0xFF, sizeof(kpad_prev_ext));
     memset(kpad_prev_axis, 0, sizeof(kpad_prev_axis));
+    memset(pointer_prev_valid, 0, sizeof(pointer_prev_valid));
+    wiiu_ir_aim_x = wiiu_ir_aim_y = 0.0f;
 
     memset(s_rumblePattern, 0xFF, sizeof(s_rumblePattern));
     s_rumbleActive = qfalse;
@@ -507,6 +637,8 @@ void WiiU_Input_Frame(void)
         cursor_accum_x = 0.0f;
         cursor_accum_y = 0.0f;
         touch_prev_valid = qfalse;
+        memset(pointer_prev_valid, 0, sizeof(pointer_prev_valid));
+        wiiu_ir_aim_x = wiiu_ir_aim_y = 0.0f;
         memset(vpad_prev_axis, 0, sizeof(vpad_prev_axis));
         memset(kpad_prev_axis, 0, sizeof(kpad_prev_axis));
         prev_in_menu = in_menu;
@@ -547,9 +679,16 @@ void IN_Init(void *windowData)
     SetDefaultBind(K_PAD0_RIGHTSHOULDER,    "+button2");      /* use item */
     SetDefaultBind(K_PAD0_LEFTTRIGGER,      "+zoom");
     SetDefaultBind(K_PAD0_RIGHTTRIGGER,     "+attack");       /* fire */
+#ifdef ELITEFORCE
+    /* EF's cgame reads "+info" for the scoreboard, not Q3's "+scores". */
+    SetDefaultBind(K_PAD0_LEFTSTICK_CLICK,  "+info");
+    SetDefaultBind(K_PAD0_RIGHTSTICK_CLICK, "+info");
+    SetDefaultBind(K_PAD0_BACK,             "+info");         /* Minus */
+#else
     SetDefaultBind(K_PAD0_LEFTSTICK_CLICK,  "+scores");
     SetDefaultBind(K_PAD0_RIGHTSTICK_CLICK, "+scores");
     SetDefaultBind(K_PAD0_BACK,             "+scores");       /* Minus */
+#endif
     SetDefaultBind(K_PAD0_DPAD_UP,          "weapnext");
     SetDefaultBind(K_PAD0_DPAD_DOWN,        "weapprev");
     SetDefaultBind(K_PAD0_DPAD_LEFT,        "weapprev");
@@ -568,6 +707,13 @@ void IN_Init(void *windowData)
     /* Touch response tuning, scaled in ScaleTouchDelta(). touch_accel 0.0 = flat multiply. */
     touch_sensitivity   = Cvar_Get("touch_sensitivity",   "1.5",  CVAR_ARCHIVE);
     touch_accel         = Cvar_Get("touch_accel",         "0.0",  CVAR_ARCHIVE);
+
+    /* IR pointer aim tuning; mirrors vWii defaults, untested against a real Sensor Bar. */
+    pointer_deadzone    = Cvar_Get("wiimote_pointer_deadzone",    "0.12", CVAR_ARCHIVE);
+    pointer_sensitivity = Cvar_Get("wiimote_pointer_sensitivity", "0.30", CVAR_ARCHIVE);
+    pointer_maxdelta    = Cvar_Get("wiimote_pointer_maxdelta",    "50",   CVAR_ARCHIVE);
+    pointer_yawrange    = Cvar_Get("wiimote_pointer_yawrange",    "50",   CVAR_ARCHIVE);
+    pointer_pitchrange  = Cvar_Get("wiimote_pointer_pitchrange",  "30",   CVAR_ARCHIVE);
 
     /* Rumble on weapon fire/damage (see snd_dma.c). Toggle with L3+X. */
     rumble_enable       = Cvar_Get("rumble_enable",       "1",    CVAR_ARCHIVE);

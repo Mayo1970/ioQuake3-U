@@ -32,6 +32,7 @@ One Makefile (`Makefile.client`), flavor selected by target name or an `=1` var:
 | `make -f Makefile.client TA=1 ta` | Team Arena-U | `ioquake3_ta_wiiu.{rpx,wuhb}` | `-DSTANDALONETA -DMISSIONPACK` |
 | `make -f Makefile.client OA=1 oa` | Open Arena-U | `ioquake3_oa_wiiu.{rpx,wuhb}` | `-DSTANDALONEOA` |
 | `make -f Makefile.client CLASSIC=1 classic` | Quake3Classic-U | `ioquake3_classic_wiiu.{rpx,wuhb}` | `-DCLASSIC` |
+| `make -f Makefile.client EF=1 ef` | Elite Force-U | `ioquake3_ef_wiiu.{rpx,wuhb}` | `-DELITEFORCE` |
 
 **CLASSIC exists in the tree and builds, but is intentionally left out of
 README.md for now.** It's a protocol-43 Dreamcast-crossplay flavor (ported from
@@ -42,9 +43,38 @@ plays on hardware, but has an **unresolved in-game performance regression**
 tried and didn't fix it) that hasn't been root-caused. Don't re-document it
 publicly until that's sorted; do feel free to keep fixing it.
 
+**EF (Elite Force) is also left out of README.md — build-verified only (all 5
+flavors compile clean from a forced clean rebuild), not yet hardware-tested.**
+Ported from PS3's reference EF implementation across `msg.c`, protocol/wire
+structs, trap-ABI dispatch (`g_public.h`/`cg_public.h`/`ui_public.h` +
+dispatchers), botlib, and `renderergl1` struct diffs. Durable invariants:
+- **Protocol 26 (own) vs. legacy 24 (retail wire) — never tie them together**
+  like CLASSIC's proto-43-both. EF's `com_legacyprotocol == com_protocol` check
+  is deliberately always-false for normal play; `clc.compat` only engages
+  against a genuine retail EF server.
+- **Trap-ABI ordinals are flavor-specific, not just widened.** EF's
+  `gameImport_t`/`cgameImport_t`/`uiImport_t` are near-fully-parallel enums, not
+  vanilla-plus-a-few-cases — cross-check every routed trap's ordinal *and* arg
+  count against the enum in play, per flavor, not just against the dispatcher
+  switch shape.
+- **No fix-pak, no bots, v1.** `qagame` runs as retail EF's own bytecode
+  `qagame.qvm` (this repo's native `code/game` — Q3A rules — is incompatible
+  with EF's `playerState_t`/`entityState_t`/`usercmd_t` layout, so `GAME_SRCS`
+  is empty for `EF=1` and `vm.c`'s native-qagame short-circuit excludes
+  `ELITEFORCE`); botlib itself still answers bot syscalls from that bytecode
+  qagame (it's engine-side), so `EA_AltAttack`/`EA_UseItem`/etc. exist, but no
+  fix-pak or bot-behavior tuning has been done for v1.
+
 Each flavor gets its own `build_client*/` object dir and its own icon
-(`icons/{q3,ta,oa,qc}.png`), so switching flavors never needs `make clean`.
-`all-flavors` builds Q3/TA/OA/Classic in sequence.
+(`icons/{q3,ta,oa,qc,ef}.png`), so switching flavors never needs `make clean`.
+`all-flavors` builds Q3/TA/OA/Classic/EF in sequence.
+
+**Header changes require a forced clean rebuild to verify.** `Makefile.client`'s
+object rule has no header-dependency tracking (no `-MMD`/`-MP`, no headers
+listed as prerequisites) — editing a shared header and rebuilding can report
+zero errors while silently skipping recompilation of `.c` files that only
+changed via that header. `rm -rf build_client*` (or the specific flavor's
+build dir) before trusting a "no errors" result after any header edit.
 
 Build from **PowerShell**, not raw MSYS2 bash (breaks `gcc.exe` — machine-level
 `TEMP=C:\Windows\TEMP`). Env block and exact commands are in `README.md`.
@@ -107,7 +137,7 @@ Known renderer gaps:
 |---|---|
 | `sys_main_wiiu.c` | Entry point: ProcUI loop, boot cmdline assembly per flavor, base path, Mii-nickname default name, exit handshake |
 | `sys_wiiu.c` | Sys_\* layer: POSIX-ish paths/dirs over wut's newlib+SD devoptab; `Sys_LoadGameDll` statically links `qagame` instead of loading a DLL |
-| `con_wiiu.c` | SD log (`log.txt`/`log_ta.txt`/`log_oa.txt`, per-line `fopen`/`fprintf`/`fclose` — durable across crashes) + `WHBLogUdp` |
+| `con_wiiu.c` | SD log (`log.txt`/`log_ta.txt`/`log_oa.txt`/`log_classic.txt`/`log_ef.txt`, per-line `fopen`/`fprintf`/`fclose` — durable across crashes) + `WHBLogUdp` |
 | `net_wiiu.c` | Real UDP/IPv4 over `nsysnet` BSD sockets |
 | `wiiu_account.cpp`/`.h` | `nn::act` Mii nickname lookup — C++-only API, read-only/non-blocking (unlike `nn::swkbd`, which hangs — see Hard rules) |
 | `wiiu_classic_extract.c` | CLASSIC-only: extracts the embedded `zpack-classic.pk3` byte array to SD on first boot |
@@ -161,6 +191,14 @@ framerate drops with bots active, not the renderer. `cgame`/`ui` stay bytecode
 JIT was tried and confirmed non-viable: the call hangs with no exception, and
 the codegen area is gated/32 KB). Don't reattempt a QVM JIT here.
 
+**EF is the one exception:** `GAME_SRCS` is empty for `EF=1` and `vm.c`'s
+native-qagame short-circuit explicitly excludes `ELITEFORCE`, so `qagame` runs
+as retail EF's own bytecode `qagame.qvm` there — this repo's native `code/game`
+is vanilla Q3A rules, structurally incompatible with EF's
+`playerState_t`/`entityState_t`/`usercmd_t` wire layout. Don't "fix" this by
+trying to make EF use native qagame; it can't without reimplementing Raven's
+actual EF game logic from scratch.
+
 ### Boot cmdline (assembled in `sys_main_wiiu.c`)
 
 Base path is a fixed `fs:/vol/external01/quake3` (= `sd:/quake3/` under
@@ -193,12 +231,12 @@ general heap under `__WIIU__` so it doesn't risk zone exhaustion.
 as of 2026-07-10.** No attached debugger; diagnose via SD logs and the crash
 handler.
 
-- `sd:/quake3/log{,_ta,_oa,_classic}.txt` — boot/runtime log, per-line
+- `sd:/quake3/log{,_ta,_oa,_classic,_ef}.txt` — boot/runtime log, per-line
   `fclose`'d so it survives crashes and freezes.
-- `sd:/quake3/crash{,_ta,_oa,_classic}.txt` — written by the DSI/ISI/PROGRAM
+- `sd:/quake3/crash{,_ta,_oa,_classic,_ef}.txt` — written by the DSI/ISI/PROGRAM
   exception handler (`wiiu_exception_handler` in `sys_main_wiiu.c`): PC, LR,
   DAR/DSISR, all GPRs, at the failing frame count.
-- `sd:/quake3/error{,_ta,_oa,_classic}.txt` — written on `Sys_Error` /
+- `sd:/quake3/error{,_ta,_oa,_classic,_ef}.txt` — written on `Sys_Error` /
   `Com_Error`.
 - `WHBLogUdp` also mirrors console output for remote log watching.
 

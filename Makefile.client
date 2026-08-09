@@ -50,6 +50,9 @@ endif
 ifeq ($(MAKECMDGOALS),classic)
   CLASSIC := 1
 endif
+ifeq ($(MAKECMDGOALS),ef)
+  EF := 1
+endif
 
 ifeq ($(TA),1)
   FLAVOR        := ta
@@ -72,6 +75,13 @@ else ifeq ($(CLASSIC),1)
   TARGET        := ioquake3_classic_wiiu
   BUILD         := build_client_classic
   DEFINES_EXTRA := -DCLASSIC
+else ifeq ($(EF),1)
+  FLAVOR        := ef
+  FLAVOR_NAME   := Elite Force-U
+  FLAVOR_ICON   := icons/ef.png
+  TARGET        := ioquake3_ef_wiiu
+  BUILD         := build_client_ef
+  DEFINES_EXTRA := -DELITEFORCE
 else
   FLAVOR        := q3
   FLAVOR_NAME   := ioQuake3-U
@@ -125,13 +135,14 @@ endif
 # (wii_main.c), just applied at the layer Wii U actually exposes.
 DEFINES := -D__WIIU__ -DWIIU -DBOTLIB \
            -DWIIU_GX2BE \
+           -DUSE_CODEC_MP3 \
            -DPRODUCT_VERSION=\"1.36_wiiu\" \
            -DUNZ_BUFSIZE=4194304 \
            $(DEFINES_EXTRA)
 
 INCLUDES := -Icode -Icode/qcommon -Icode/botlib -Icode/server -Icode/client \
             -Icode/renderercommon -Icode/renderergx2 -Icode/renderergl1 \
-            -Icode/wiiu -Icode/sys \
+            -Icode/wiiu -Icode/sys -Icode/thirdparty/minimp3 \
             -I$(WUT_ROOT)/include -I$(PORTLIBS_PPC)/include \
             -I$(BUILD)
 
@@ -166,14 +177,23 @@ QCOMMON_SRCS := \
 # the file (not just the define) is a link error, not a clean disable. No
 # curl (cl_http_curl/windows.c), no mumble (libmumblelink.c, USE_MUMBLE-gated
 # and unneeded), no snd_altivec.c (Espresso's 750-class cores have no
-# AltiVec), no snd_codec_ogg/opus.c (USE_CODEC_VORBIS/OPUS left undefined).
+# AltiVec), no snd_codec_ogg/opus.c (USE_CODEC_VORBIS/OPUS left undefined --
+# both would need libogg/libvorbis/libopus vendored in).
+# snd_codec_mp3.c IS built (-DUSE_CODEC_MP3): minimp3 is a single public-domain
+# header with no external deps and no libc allocations, so it costs nothing but
+# the translation unit. Matches the PS3/PS4 ports. minimp3 emits native-endian
+# int16 PCM, which on this big-endian target is exactly what the WAV codec
+# produces after its own S_ByteSwapRawSamples pass -- snd_mem.c's ResampleSfx
+# (the compressionMethod 0 path every non-ADPCM sound takes) reads the shorts
+# without a LittleShort(), so no extra swap is needed here.
 CLIENT_SRCS := \
   code/client/cl_avi.c code/client/cl_cgame.c code/client/cl_cin.c \
   code/client/cl_console.c code/client/cl_input.c code/client/cl_keys.c \
   code/client/cl_main.c code/client/cl_net_chan.c code/client/cl_parse.c \
   code/client/cl_scrn.c code/client/cl_ui.c \
   code/client/snd_dma.c code/client/snd_mem.c code/client/snd_mix.c \
-  code/client/snd_codec.c code/client/snd_codec_wav.c code/client/snd_main.c \
+  code/client/snd_codec.c code/client/snd_codec_wav.c \
+  code/client/snd_codec_mp3.c code/client/snd_main.c \
   code/client/snd_adpcm.c code/client/snd_wavelet.c code/client/snd_openal.c
 
 SERVER_SRCS := \
@@ -186,6 +206,16 @@ SERVER_SRCS := \
 # bot AI is game-side and interpreter overhead was the framerate-drop root
 # cause with bots active. bg_lib.c is `#ifdef Q3_VM`-gated (compiles to
 # nothing here, same as stock native DLL builds). cgame/ui stay bytecode.
+#
+# EF excluded: this native code/game is vanilla Q3A and doesn't match EF's
+# playerState_t/entityState_t/usercmd_t layout (rechargeTime/useTime/introTime
+# added, grapplePoint/generic1/jumppad_ent/pmove_framecount/jumppad_frame
+# dropped -- see q_shared.h ELITEFORCE diffs). EF runs its own retail
+# qagame.qvm as bytecode instead (vm.c's VM_Create excludes ELITEFORCE from
+# the native short-circuit), same as every other engine-side EF port.
+ifeq ($(EF),1)
+GAME_SRCS :=
+else
 GAME_SRCS := \
   code/game/ai_chat.c code/game/ai_cmd.c code/game/ai_dmnet.c \
   code/game/ai_dmq3.c code/game/ai_main.c code/game/ai_team.c \
@@ -198,6 +228,7 @@ GAME_SRCS := \
   code/game/g_session.c code/game/g_spawn.c code/game/g_svcmds.c \
   code/game/g_syscalls.c code/game/g_target.c code/game/g_team.c \
   code/game/g_trigger.c code/game/g_utils.c code/game/g_weapon.c
+endif
 
 BOTLIB_SRCS := \
   code/botlib/be_aas_bspq3.c code/botlib/be_aas_cluster.c code/botlib/be_aas_debug.c \
@@ -291,7 +322,7 @@ CPPOBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(WIIU_CPPSRCS))
 OBJS += $(CPPOBJS)
 
 #---------------------------------------------------------------------------------
-.PHONY: all ta oa classic all-flavors clean
+.PHONY: all ta oa classic ef all-flavors clean
 all: $(TARGET).rpx $(TARGET).wuhb
 
 ta: $(TARGET).rpx $(TARGET).wuhb
@@ -299,6 +330,8 @@ ta: $(TARGET).rpx $(TARGET).wuhb
 oa: $(TARGET).rpx $(TARGET).wuhb
 
 classic: $(TARGET).rpx $(TARGET).wuhb
+
+ef: $(TARGET).rpx $(TARGET).wuhb
 
 all-flavors:
 	@echo "=== Building ioQuake3-U ==="
@@ -309,6 +342,8 @@ all-flavors:
 	$(MAKE) -f Makefile.client OA=1 oa
 	@echo "=== Building Classic ==="
 	$(MAKE) -f Makefile.client CLASSIC=1 classic
+	@echo "=== Building Elite Force ==="
+	$(MAKE) -f Makefile.client EF=1 ef
 	@echo "=== All flavors complete ==="
 
 $(TARGET).rpx: $(BUILD)/$(TARGET).elf

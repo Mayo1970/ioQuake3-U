@@ -211,7 +211,7 @@ void CL_ParseSnapshot( msg_t *msg ) {
 	// get the reliable sequence acknowledge number
 	// NOTE: now sent with all server to client messages
 	//clc.reliableAcknowledge = MSG_ReadLong( msg );
-#ifdef CLASSIC
+#if defined(CLASSIC) || defined(ELITEFORCE)
 	if(msg->compat)
 		clc.reliableAcknowledge = MSG_ReadLong( msg );
 #endif
@@ -490,7 +490,7 @@ void CL_ParseGamestate( msg_t *msg ) {
 		if ( cmd == svc_EOF ) {
 			break;
 		}
-#ifdef CLASSIC
+#if defined(CLASSIC) || defined(ELITEFORCE)
 		if ( msg->compat && cmd <= 0 ) {
 			break;
 		}
@@ -531,12 +531,12 @@ void CL_ParseGamestate( msg_t *msg ) {
 	// on real DC/1.16n servers), NOT a clientNum. The client learns its real
 	// clientNum from the snapshot playerstate, so leave clc.clientNum at its
 	// default here (matches the verified PS3/PS4 behaviour).
-#ifdef CLASSIC
+#if defined(CLASSIC) || defined(ELITEFORCE)
 	if(!msg->compat)
 #endif
 	clc.clientNum = MSG_ReadLong(msg);
 	// read the checksum feed
-#ifdef CLASSIC
+#if defined(CLASSIC) || defined(ELITEFORCE)
 	if(!clc.demoplaying || !msg->compat)
 #endif
 	clc.checksumFeed = MSG_ReadLong( msg );
@@ -883,7 +883,7 @@ void CL_ParseServerMessage( msg_t *msg ) {
 		Com_Printf ("------------------\n");
 	}
 
-#ifdef CLASSIC
+#if defined(CLASSIC) || defined(ELITEFORCE)
 	if(!msg->compat) {
 #endif
 	MSG_Bitstream(msg);
@@ -894,7 +894,7 @@ void CL_ParseServerMessage( msg_t *msg ) {
 	if ( clc.reliableAcknowledge < clc.reliableSequence - MAX_RELIABLE_COMMANDS ) {
 		clc.reliableAcknowledge = clc.reliableSequence;
 	}
-#ifdef CLASSIC
+#if defined(CLASSIC) || defined(ELITEFORCE)
 	}
 #endif
 
@@ -903,7 +903,7 @@ void CL_ParseServerMessage( msg_t *msg ) {
 	//
 	while ( 1 ) {
 		if ( msg->readcount > msg->cursize ) {
-#ifdef CLASSIC
+#if defined(CLASSIC) || defined(ELITEFORCE)
 			if(msg->compat) {
 				/* Proto-43 has no svc_EOF; loop overrun is normal. */
 				Com_DPrintf("WARNING: CL_ParseServerMessage: read past end of server message\n");
@@ -916,7 +916,7 @@ void CL_ParseServerMessage( msg_t *msg ) {
 
 		cmd = MSG_ReadByte( msg );
 
-#ifdef CLASSIC
+#if defined(CLASSIC) || defined(ELITEFORCE)
 		if(msg->compat && cmd <= 0) {
 			SHOWNET( msg, "END OF MESSAGE" );
 			break;

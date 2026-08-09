@@ -16,10 +16,12 @@ instead of an 88 MB budget, and three 1.24 GHz Espresso cores instead of one
 - Boots, loads maps, and plays with bots — world geometry, lightmaps, and
   entity/model rendering (weapons, players, items) all render through the stock
   `renderergl1` pipeline driving a native GX2 backend
-- Four build flavors: **ioQuake3-U** (Q3A), **Team Arena-U**, **Open Arena-U** — each its
-  own `.wuhb` with its own name and icon
-- GamePad (VPAD) and Pro Controller / Classic Controller (KPAD) input, with
-  tunable stick deadzone/response curve and DRC touchscreen look
+- Five build flavors: **ioQuake3-U** (Q3A), **Team Arena-U**, **Open Arena-U**,
+  **Quake3Classic-U** (Dreamcast-protocol crossplay), and **Elite Force-U** —
+  each its own `.wuhb` with its own name and icon
+- GamePad (VPAD), Pro Controller / Classic Controller (KPAD), and Wii Remote +
+  Nunchuk (KPAD) input, with tunable stick deadzone/response curve and DRC
+  touchscreen look
 - GamePad rumble on own weapon fire, own pain, and hit feedback
 - Default player name is taken from your Wii U Mii nickname on first boot
 
@@ -51,7 +53,8 @@ C:\devkitpro\msys2\usr\bin\make.exe -f Makefile.client all              # ioQuak
 C:\devkitpro\msys2\usr\bin\make.exe -f Makefile.client TA=1 ta          # Team Arena-U
 C:\devkitpro\msys2\usr\bin\make.exe -f Makefile.client OA=1 oa          # Open Arena-U
 C:\devkitpro\msys2\usr\bin\make.exe -f Makefile.client CLASSIC=1 classic # Quake3Classic-U
-C:\devkitpro\msys2\usr\bin\make.exe -f Makefile.client all-flavors      # all four
+C:\devkitpro\msys2\usr\bin\make.exe -f Makefile.client EF=1 ef          # Elite Force-U
+C:\devkitpro\msys2\usr\bin\make.exe -f Makefile.client all-flavors      # all five
 C:\devkitpro\msys2\usr\bin\make.exe -f Makefile.client clean
 ```
 Each flavor builds into its own `build_client*` directory, so switching between
@@ -63,26 +66,21 @@ Copy each `.wuhb` anywhere under `sd:/wiiu/apps/` on the SD card — Aroma scans
 that tree recursively and lists each flavor as its own tile with its own name
 and icon.
 
-**You need the original game data** 
-
-```
-sd:/quake3/
-├── baseq3/
-│   ├── pak0.pk3 .. pak8.pk3       <- Quake III Arena retail data
-├── missionpack/                    <- Team Arena only
-│   ├── pak0.pk3 .. pak3.pk3
-└── baseoa/                         <- Open Arena only
-    └── pak0.pk3 ...
-```
+**You need the original game data** — where to get it and the exact SD card
+layout for each of the five flavors (ioQuake3-U, Team Arena-U, Open Arena-U,
+Quake3Classic-U, Elite Force-U) is covered in
+**[INSTALLATION.md](INSTALLATION.md)**.
 
 Game data, logs, configs, and the qkey all live under `sd:/quake3/` — separate
-from wherever the `.wuhb` itself is installed. Team Arena needs **both**
-`baseq3/` and `missionpack/`; Open Arena only needs its own `baseoa/`.
+from wherever the `.wuhb` itself is installed.
 
 ## Controls
 
-All available input methods are active at once — GamePad, Pro Controller, and
-Classic Controller can be freely mixed.
+All available input methods are active at once — GamePad, Pro Controller,
+Classic Controller, and Wii Remote + Nunchuk can be freely mixed.
+
+### GamePad / Pro Controller / Classic Controller
+
 | Input | Action |
 |---|---|
 | Left stick | Move (forward/back + strafe) |
@@ -107,6 +105,37 @@ to back out.
 
 The GamePad's motor rumbles automatically on your own weapon fire, own pain,
 and hit feedback. Toggle it in-game with **left stick click + X**.
+
+### Wii Remote + Nunchuk
+
+Sync a Wii Remote through the Wii U's system Bluetooth pairing the same way
+you'd pair one for a Wii U game with Wii Remote support, then attach a
+Nunchuk. A USB-powered Wii Sensor Bar is required for pointer aim — without
+one, the Wii Remote still works for buttons and the Nunchuk stick, it just
+can't point.
+
+| Input | Action |
+|---|---|
+| Nunchuk stick | Move (forward/back + strafe) |
+| IR pointer (needs a Sensor Bar) | Look (yaw + pitch), plus an instant fine-aim offset on top |
+| **B** (underside trigger) | Fire |
+| **A** | Jump |
+| **Z** | Crouch |
+| **C** | Use item |
+| **1** | Zoom |
+| **2** | Walk |
+| **D-pad** | Weapon prev/next |
+| **Minus** | Scoreboard |
+| **Plus** | Menu (Escape) |
+| **Home + Minus (held)** | Quit to the Wii U Menu (or HBL, if launched from there) |
+
+The IR pointer uses a dual-layer aim model ported from the vWii sibling
+port: holding the pointer off-center turns the view continuously (like a
+stick held toward the edge), while the pointer's exact position also applies
+an instant fine-aim offset on top — so it both turns like a controller and
+points like a light gun. Tune it with `wiimote_pointer_deadzone`,
+`wiimote_pointer_sensitivity`, `wiimote_pointer_maxdelta`,
+`wiimote_pointer_yawrange`, and `wiimote_pointer_pitchrange`.
 
 ## Credits
 

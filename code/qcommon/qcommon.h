@@ -93,7 +93,7 @@ int		MSG_LookaheadByte (msg_t *msg);
 
 void MSG_WriteDeltaUsercmdKey( msg_t *msg, int key, usercmd_t *from, usercmd_t *to );
 void MSG_ReadDeltaUsercmdKey( msg_t *msg, int key, usercmd_t *from, usercmd_t *to );
-#ifdef CLASSIC
+#if defined(CLASSIC) || defined(ELITEFORCE)
 void MSG_WriteDeltaUsercmd( msg_t *msg, usercmd_t *from, usercmd_t *to );
 void MSG_ReadDeltaUsercmd( msg_t *msg, usercmd_t *from, usercmd_t *to );
 #endif
@@ -264,6 +264,8 @@ PROTOCOL
  * trick OA uses below. */
 #if defined(CLASSIC)
 #define	PROTOCOL_VERSION	43
+#elif defined(ELITEFORCE)
+#define	PROTOCOL_VERSION	26
 #else
 #define	PROTOCOL_VERSION	71
 #endif
@@ -276,6 +278,10 @@ PROTOCOL
  * never engages compat mode. */
 #if defined(CLASSIC)
 #define PROTOCOL_LEGACY_VERSION	43
+#elif defined(ELITEFORCE)
+/* 26 is ioEF's own id, 24 is real retail EF -- clc.compat only turns on
+ * against an actual retail server. Do not "fix" this to force compat=true. */
+#define PROTOCOL_LEGACY_VERSION	24
 #elif defined(STANDALONEOA)
 #define PROTOCOL_LEGACY_VERSION	71
 #else
@@ -287,12 +293,25 @@ PROTOCOL
 // NOTE: that stuff only works with two digits protocols
 extern int demo_protocols[];
 
+#if defined(ELITEFORCE) && !defined(UPDATE_SERVER_NAME)
+#define	UPDATE_SERVER_NAME	"motd.stef1.ravensoft.com"
+#endif
 #if !defined UPDATE_SERVER_NAME && !defined STANDALONE
 #define	UPDATE_SERVER_NAME	"update.quake3arena.com"
 #endif
 // override on command line, config files etc.
+#if defined(ELITEFORCE) && !defined(MASTER_SERVER_NAME)
+#define MASTER_SERVER_NAME	"master.stef1.ravensoft.com"
+#endif
 #ifndef MASTER_SERVER_NAME
 #define MASTER_SERVER_NAME	"master.quake3arena.com"
+#endif
+
+#if defined(ELITEFORCE) && !defined(AUTHORIZE_SERVER_NAME)
+#define	AUTHORIZE_SERVER_NAME	"authenticate.stef1.ravensoft.com"
+#endif
+#if defined(ELITEFORCE) && !defined(PORT_AUTHORIZE)
+#define	PORT_AUTHORIZE		27953
 #endif
 
 #ifndef STANDALONE
@@ -304,7 +323,12 @@ extern int demo_protocols[];
   #endif
 #endif
 
+#if defined(ELITEFORCE) && !defined(PORT_MASTER)
+#define	PORT_MASTER			27953
+#endif
+#ifndef PORT_MASTER
 #define	PORT_MASTER			27950
+#endif
 #define	PORT_UPDATE			27951
 #define	PORT_SERVER			27960
 #define	NUM_SERVER_PORTS	4		// broadcast scan this many ports after

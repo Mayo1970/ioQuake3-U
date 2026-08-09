@@ -14,6 +14,13 @@ extern "C" {
 /* Writes default account's Mii nickname (ASCII, non-ASCII replaced with '_') into out. */
 int WiiU_GetAccountName(char *out, size_t outSize);
 
+/* Call once early in boot (before Com_Init) -- the nn::act hit must happen at this
+ * proven-safe timing. WiiU_DefaultPlayerName() is then a pure read. */
+void WiiU_InitDefaultPlayerName(void);
+
+/* Cached Mii nickname, or "UnnamedPlayer" if unavailable. Never NULL. */
+const char *WiiU_DefaultPlayerName(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -459,6 +459,7 @@ static void SV_AddEntitiesVisibleFromPoint( vec3_t origin, clientSnapshot_t *fra
 
 		// if it's a portal entity, add everything visible from its camera position
 		if ( ent->r.svFlags & SVF_PORTAL ) {
+#ifndef ELITEFORCE
 			if ( ent->s.generic1 ) {
 				vec3_t dir;
 				VectorSubtract(ent->s.origin, origin, dir);
@@ -466,6 +467,7 @@ static void SV_AddEntitiesVisibleFromPoint( vec3_t origin, clientSnapshot_t *fra
 					continue;
 				}
 			}
+#endif
 			SV_AddEntitiesVisibleFromPoint( ent->s.origin2, frame, eNums, qtrue );
 		}
 

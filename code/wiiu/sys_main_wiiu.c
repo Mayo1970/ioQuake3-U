@@ -60,14 +60,17 @@ void  WiiU_ExtractBundledZpackClassic(void);
 #define WIIU_FS_GAME "baseq3"
 #define WIIU_VM_GAME "2"
 #define WIIU_LOG_SUFFIX "_classic"
+#elif defined(ELITEFORCE)
+/* EF's playerState_t/entityState_t/usercmd_t layout is incompatible with this repo's
+ * native (vanilla Q3A) code/game, so it always runs retail EF's own bytecode qagame.qvm. */
+#define WIIU_FS_GAME "baseEF"
+#define WIIU_VM_GAME "2"
+#define WIIU_LOG_SUFFIX "_ef"
 #else
 #define WIIU_FS_GAME "baseq3"
 #define WIIU_VM_GAME "0"
 #define WIIU_LOG_SUFFIX ""
 #endif
-
-/* Config is written under WIIU_FS_GAME, not always baseq3 (TA uses missionpack/). */
-#define WIIU_CONFIG_PATH WIIU_BASE_PATH "/" WIIU_FS_GAME "/" CONFIG_PREFIX ".cfg"
 
 /* Diagnostic toggle for the console-freeze-on-quit bisect; networking was exonerated, kept at 0. */
 #define WIIU_DIAG_SKIP_NET 0
@@ -332,8 +335,8 @@ int main(int argc, char **argv)
 #endif
 
 #ifndef DEDICATED
-			/* Verify paks exist before Com_Init bothers trying. OA checks only its own dir. */
-#if defined(STANDALONEOA)
+			/* Verify paks exist before Com_Init bothers trying. OA/EF check only their own dir. */
+#if defined(STANDALONEOA) || defined(ELITEFORCE)
 			{
 				FILE *pk = fopen(WIIU_BASE_PATH "/" WIIU_FS_GAME "/pak0.pk3", "rb");
 				if (pk) {
@@ -430,20 +433,9 @@ int main(int argc, char **argv)
 			         " +set j_forward -0.25 +set j_side 0.25"
 			         " +set net_enabled 1");
 
-			/* Default name = Mii nickname, only set on first boot (no config yet). */
-			{
-				FILE *cf = fopen(WIIU_CONFIG_PATH, "rb");
-				if (cf) {
-					fclose(cf);
-				} else if (!strstr(commandLine, "+set name") && !strstr(commandLine, "+seta name")) {
-					char miiName[64];
-					if (WiiU_GetAccountName(miiName, sizeof(miiName))) {
-						Q_strcat(commandLine, sizeof(commandLine), " +set name \"");
-						Q_strcat(commandLine, sizeof(commandLine), miiName);
-						Q_strcat(commandLine, sizeof(commandLine), "\"");
-					}
-				}
-			}
+			/* Cache Mii nickname here (proven-safe nn::act timing) as CL_Init's
+			 * "name" cvar default, so the UI's Defaults button doesn't wipe it. */
+			WiiU_InitDefaultPlayerName();
 #endif
 
 			LOGCP("[ioQuake3-U] CP4: calling Com_Init (loads paks)...\n");

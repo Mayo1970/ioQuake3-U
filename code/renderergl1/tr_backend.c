@@ -489,9 +489,18 @@ void RB_BeginDrawingView (void) {
 	GL_State( GLS_DEFAULT );
 #if defined(WIIU_GX2BE)
 	(void)clearBits;
-	/* depth always; color only for r_fastsky (stencil shadows unsupported) */
-	GX2BE_Clear( ( r_fastsky->integer && !( backEnd.refdef.rdflags & RDF_NOWORLDMODEL ) ),
-	            qtrue, 0.0f, 0.0f, 0.0f );
+	{
+		float skyR = 0.0f, skyG = 0.0f, skyB = 0.0f;
+#ifdef ELITEFORCE
+		// r_origfastsky 1 restores the tan fastsky color original EF cleared to
+		if ( r_origfastsky->integer ) {
+			skyR = 0.8f; skyG = 0.7f; skyB = 0.4f;
+		}
+#endif
+		/* depth always; color only for r_fastsky (stencil shadows unsupported) */
+		GX2BE_Clear( ( r_fastsky->integer && !( backEnd.refdef.rdflags & RDF_NOWORLDMODEL ) ),
+		            qtrue, skyR, skyG, skyB );
+	}
 #else
 	// clear relevant buffers
 	clearBits = GL_DEPTH_BUFFER_BIT;
@@ -503,10 +512,17 @@ void RB_BeginDrawingView (void) {
 	if ( r_fastsky->integer && !( backEnd.refdef.rdflags & RDF_NOWORLDMODEL ) )
 	{
 		clearBits |= GL_COLOR_BUFFER_BIT;	// FIXME: only if sky shaders have been used
+#ifdef ELITEFORCE
+		if(r_origfastsky->integer)
+			qglClearColor(0.8f, 0.7f, 0.4f, 1.0f);
+		else
+			qglClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+#else
 #ifdef _DEBUG
 		qglClearColor( 0.8f, 0.7f, 0.4f, 1.0f );	// FIXME: get color of sky
 #else
 		qglClearColor( 0.0f, 0.0f, 0.0f, 1.0f );	// FIXME: get color of sky
+#endif
 #endif
 	}
 	qglClear( clearBits );

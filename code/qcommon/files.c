@@ -4185,7 +4185,7 @@ void FS_InitFilesystem( void ) {
 	// try to start up normally
 	FS_Startup(com_basegame->string);
 
-#if !defined(STANDALONE) && !defined(STANDALONEOA) && !defined(CLASSIC)
+#if !defined(STANDALONE) && !defined(STANDALONEOA) && !defined(CLASSIC) && !defined(ELITEFORCE)
 	FS_CheckPak0( );
 #endif
 
@@ -4223,7 +4223,7 @@ void FS_Restart( int checksumFeed ) {
 	// try to start up normally
 	FS_Startup(com_basegame->string);
 
-#if !defined(STANDALONE) && !defined(STANDALONEOA) && !defined(CLASSIC)
+#if !defined(STANDALONE) && !defined(STANDALONEOA) && !defined(CLASSIC) && !defined(ELITEFORCE)
 	FS_CheckPak0( );
 #endif
 

@@ -612,11 +612,15 @@ vm_t *VM_Create( const char *module, intptr_t (*systemCalls)(intptr_t *),
 
 	do
 	{
-#ifdef __WIIU__
+#if defined(__WIIU__) && !defined(ELITEFORCE)
 		/* qagame is statically linked in (code/wiiu/sys_wiiu.c's
 		 * Sys_LoadGameDll) to skip the bytecode interpreter for bot AI;
 		 * there's no on-disk DLL for FS_FindVM to find, so force the branch
-		 * instead of searching for one. cgame/ui still resolve normally. */
+		 * instead of searching for one. cgame/ui still resolve normally.
+		 * ELITEFORCE excluded: its playerState_t/entityState_t/usercmd_t
+		 * layout is incompatible with this repo's native (vanilla Q3A)
+		 * code/game, so EF falls through to the normal FS_FindVM search and
+		 * loads retail EF's own qagame.qvm as bytecode instead. */
 		if(interpret == VMI_NATIVE && !Q_stricmp(module, "qagame"))
 		{
 			Q_strncpyz(filename, module, sizeof(filename));

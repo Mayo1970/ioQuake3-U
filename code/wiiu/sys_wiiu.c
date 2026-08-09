@@ -277,10 +277,14 @@ char *Sys_GetCurrentUser(void) { return "WiiU Player"; }
 qboolean Sys_LowPhysicalMemory(void) { return qfalse; }
 
 /* No dlopen -- qagame is compiled natively into the .rpx because the bot AI interpreter
- * was tanking framerate. cgame/ui still stuck as bytecode VMs. */
+ * was tanking framerate. cgame/ui still stuck as bytecode VMs. ELITEFORCE excluded:
+ * its playerState_t/entityState_t/usercmd_t layout is incompatible with this repo's
+ * native (vanilla Q3A) code/game, so it stays bytecode-only (see vm.c's VM_Create). */
+#ifndef ELITEFORCE
 extern void dllEntry( intptr_t (QDECL *syscallptr)( intptr_t arg, ... ) );
 extern intptr_t vmMain( int command, int arg0, int arg1, int arg2, int arg3,
 	int arg4, int arg5, int arg6, int arg7, int arg8, int arg9, int arg10, int arg11 );
+#endif
 
 void *Sys_LoadDll(const char *name, qboolean useSystemLib)
 {
@@ -294,13 +298,15 @@ void Sys_UnloadDll(void *dllHandle) { (void)dllHandle; }
 void *Sys_LoadGameDll(const char *name, vmMainProc *entryPoint,
 	intptr_t (QDECL *systemcalls)(intptr_t, ...))
 {
+#ifndef ELITEFORCE
 	if (!Q_stricmp(name, "qagame")) {
 		dllEntry(systemcalls);
 		*entryPoint = vmMain;
 		return (void *)1; /* sentinel: non-NULL, never dereferenced/unloaded */
 	}
+#endif
 
-	(void)entryPoint; (void)systemcalls;
+	(void)name; (void)entryPoint; (void)systemcalls;
 	Com_Printf("Sys_LoadGameDll(%s): not supported on Wii U (bytecode VM only)\n", name);
 	return NULL;
 }

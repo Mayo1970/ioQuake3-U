@@ -1161,6 +1161,10 @@ void CM_Trace( trace_t *results, const vec3_t start, const vec3_t end, vec3_t mi
 	// fill in a default trace
 	Com_Memset( &tw, 0, sizeof(tw) );
 	tw.trace.fraction = 1;	// assume it goes the entire distance until shown otherwise
+#ifdef ELITEFORCE
+	// EF's dreadnought weapon crashes on a trace with no surface hit; default to SURF_NOIMPACT.
+	tw.trace.surfaceFlags = SURF_NOIMPACT;
+#endif
 	VectorCopy(origin, tw.modelOrigin);
 
 	if (!cm.numNodes) {
