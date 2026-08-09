@@ -104,6 +104,35 @@ ifeq ($(DEBUG),1)
 endif
 
 #---------------------------------------------------------------------------------
+# Self-extracting bundled pak (per flavor). The flavor's own pak from fixes/ is
+# baked into the .rpx as a C byte array; WiiU_ExtractBundledPak()
+# (code/wiiu/wiiu_pak_extract.c, called from sys_main_wiiu.c before Com_Init)
+# writes it to SD on first boot, so nobody has to copy it there by hand. Same
+# technique as the Wii sibling port's Wii_ExtractBundledZpackClassic().
+#   q3      -> fixes/baseq3/pak9-wiiu.pk3       -> sd:/quake3/baseq3/
+#   ta      -> fixes/missionpack/pak4-wiiu.pk3  -> sd:/quake3/missionpack/
+#   classic -> fixes/baseq3/zpack-classic.pk3   -> sd:/quake3/baseq3/
+# oa/ef ship no bundled pak, so the TU isn't compiled for them at all.
+# Must sit above DEFINES/CFLAGS (both `:=`, i.e. expanded immediately).
+#---------------------------------------------------------------------------------
+ifeq ($(CLASSIC),1)
+  BUNDLED_PAK      := fixes/baseq3/zpack-classic.pk3
+  BUNDLED_PAK_NAME := baseq3/zpack-classic.pk3
+else ifeq ($(TA),1)
+  BUNDLED_PAK      := fixes/missionpack/pak4-wiiu.pk3
+  BUNDLED_PAK_NAME := missionpack/pak4-wiiu.pk3
+else ifeq ($(FLAVOR),q3)
+  BUNDLED_PAK      := fixes/baseq3/pak9-wiiu.pk3
+  BUNDLED_PAK_NAME := baseq3/pak9-wiiu.pk3
+endif
+
+ifneq ($(BUNDLED_PAK),)
+  DEFINES_EXTRA += -DWIIU_HAVE_BUNDLED_PAK
+endif
+# (the header rule itself lives further down, after `all:` -- the first target
+#  in the file is make's default goal, so no rule may precede it)
+
+#---------------------------------------------------------------------------------
 #  -DWIIU_GX2_DISPLAY turns on real WHBGfx/GX2 display bring-up
 #  (code/renderergx2/tr_gx2_init.c). Left OFF for the first Session-0 boot
 #  verification pass (zero GPU risk -- pure headless Com_Init/cgame-init
@@ -295,25 +324,18 @@ WIIU_SRCS := \
 # client, kept separate from WIIU_SRCS since it needs $(CXX)/$(CXXFLAGS).
 WIIU_CPPSRCS := code/wiiu/wiiu_account.cpp
 
-# CLASSIC-only: self-extracting Dreamcast-crossplay pak. Embeds
-# fixes/baseq3/zpack-classic.pk3 as a C byte array baked into the .rpx, then
-# WiiU_ExtractBundledZpackClassic() (called from sys_main_wiiu.c before
-# Com_Init) writes it to sd:/quake3/baseq3/ on first boot. Same technique as
-# the Wii sibling port's Wii_ExtractBundledZpackClassic().
-ifeq ($(CLASSIC),1)
-WIIU_SRCS += code/wiiu/wiiu_classic_extract.c
-$(BUILD)/code/wiiu/wiiu_classic_extract.o: $(BUILD)/zpack_classic_embedded.h
-
-$(BUILD)/zpack_classic_embedded.h: fixes/baseq3/zpack-classic.pk3
-	@mkdir -p $(@D)
-	@python3 -c "\
-data = open('$<', 'rb').read(); \
-f = open('$@', 'w'); \
-f.write('static const unsigned char zpack_classic_data[] = {' + ','.join(str(b) for b in data) + '};\n'); \
-f.write('static const unsigned int zpack_classic_data_len = %d;\n' % len(data)); \
-f.write('static const unsigned int zpack_classic_data_csum = %dU;\n' % (sum(data) & 0xFFFFFFFF)); \
-f.close()"
-	@echo generated $@
+# Self-extracting bundled pak (per flavor). Embeds the flavor's own pak from
+# fixes/ as a C byte array baked into the .rpx, then WiiU_ExtractBundledPak()
+# (called from sys_main_wiiu.c before Com_Init) writes it to SD on first boot.
+# Same technique as the Wii sibling port's Wii_ExtractBundledZpackClassic().
+#   q3      -> fixes/baseq3/pak9-wiiu.pk3       -> sd:/quake3/baseq3/
+#   ta      -> fixes/missionpack/pak4-wiiu.pk3  -> sd:/quake3/missionpack/
+#   classic -> fixes/baseq3/zpack-classic.pk3   -> sd:/quake3/baseq3/
+# oa/ef ship no bundled pak, so the TU isn't compiled for them at all.
+# BUNDLED_PAK / the -DWIIU_HAVE_BUNDLED_PAK define and the header rule live up
+# with the flavor block (DEFINES/CFLAGS are `:=`, so a late += would be a no-op).
+ifneq ($(BUNDLED_PAK),)
+WIIU_SRCS += code/wiiu/wiiu_pak_extract.c
 endif
 
 SRCS := $(QCOMMON_SRCS) $(CLIENT_SRCS) $(SERVER_SRCS) $(BOTLIB_SRCS) $(GAME_SRCS) \
@@ -333,6 +355,24 @@ oa: $(TARGET).rpx $(TARGET).wuhb
 classic: $(TARGET).rpx $(TARGET).wuhb
 
 ef: $(TARGET).rpx $(TARGET).wuhb
+
+# Bundled-pak byte array (see the BUNDLED_PAK block near the flavor selection).
+# Kept below `all:` on purpose -- the first target in the file is the default goal.
+ifneq ($(BUNDLED_PAK),)
+$(BUILD)/code/wiiu/wiiu_pak_extract.o: $(BUILD)/bundled_pak_embedded.h
+
+$(BUILD)/bundled_pak_embedded.h: $(BUNDLED_PAK)
+	@mkdir -p $(@D)
+	@python3 -c "\
+data = open('$<', 'rb').read(); \
+f = open('$@', 'w'); \
+f.write('#define WIIU_BUNDLED_PAK_NAME \"$(BUNDLED_PAK_NAME)\"\n'); \
+f.write('static const unsigned char wiiu_bundled_pak_data[] = {' + ','.join(str(b) for b in data) + '};\n'); \
+f.write('static const unsigned int wiiu_bundled_pak_len = %d;\n' % len(data)); \
+f.write('static const unsigned int wiiu_bundled_pak_csum = %dU;\n' % (sum(data) & 0xFFFFFFFF)); \
+f.close()"
+	@echo generated $@
+endif
 
 all-flavors:
 	@echo "=== Building ioQuake3-U ==="

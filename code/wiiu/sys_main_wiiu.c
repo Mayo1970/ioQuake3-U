@@ -40,8 +40,8 @@ void  CON_Flush(void);
 void  CON_Shutdown(void);
 void  CON_SetForeground(qboolean fg);
 void  WiiU_SetBasePath(const char *path);
-#if defined(CLASSIC) && !defined(DEDICATED)
-void  WiiU_ExtractBundledZpackClassic(void);
+#if defined(WIIU_HAVE_BUNDLED_PAK) && !defined(DEDICATED)
+void  WiiU_ExtractBundledPak(void);
 #endif
 
 #define WIIU_BASE_PATH "fs:/vol/external01/quake3"
@@ -329,9 +329,9 @@ int main(int argc, char **argv)
 			chdir(WIIU_BASE_PATH);
 			LOGCP("[ioQuake3-U] CP1: base = " WIIU_BASE_PATH "\n");
 
-#if defined(CLASSIC) && !defined(DEDICATED)
-			/* Write embedded zpack-classic.pk3 to SD before the pak0 preflight check. */
-			WiiU_ExtractBundledZpackClassic();
+#if defined(WIIU_HAVE_BUNDLED_PAK) && !defined(DEDICATED)
+			/* Write this flavor's embedded pak to SD before the pak0 preflight check. */
+			WiiU_ExtractBundledPak();
 #endif
 
 #ifndef DEDICATED

@@ -53,6 +53,9 @@ Copy your Quake III Arena `baseq3` paks:
 sd:/quake3/baseq3/pak0.pk3 … pak8.pk3
 ```
 
+The port's own fix pak (`pak9-wiiu.pk3`) is written to that same `baseq3/`
+folder automatically on first launch — nothing to copy by hand.
+
 ## Team Arena-U
 
 Needs **both** Q3A's `baseq3` and Team Arena's `missionpack`:
@@ -61,6 +64,9 @@ Needs **both** Q3A's `baseq3` and Team Arena's `missionpack`:
 sd:/quake3/baseq3/pak0.pk3 … pak8.pk3
 sd:/quake3/missionpack/pak0.pk3 … pak3.pk3
 ```
+
+The port's own fix pak (`pak4-wiiu.pk3`) is written to `missionpack/`
+automatically on first launch — nothing to copy by hand.
 
 ## Open Arena-U
 

@@ -162,6 +162,9 @@ static float        cursor_accum_x, cursor_accum_y;
 static qboolean     touch_prev_valid;
 static uint16_t     touch_prev_x, touch_prev_y;
 
+/* Separate touch edge for the OSK -- it wants taps, not the look-delta model. */
+static qboolean     osk_touch_prev;
+
 /* Track which ioq3 keys are currently held (for release-all on mode switch) */
 static qboolean     key_held[MAX_KEYS];
 static qboolean     prev_in_menu;
@@ -302,6 +305,37 @@ static void ProcessButtons(const buttonMap_t *map, int count,
     }
 }
 
+/* Edge test for a two-button combo: fires once when either half is newly
+ * pressed while the other is already held, so press order doesn't matter. */
+static qboolean ComboEdge(uint32_t trigger, uint32_t hold, uint32_t a, uint32_t b)
+{
+    return ((( trigger & a) && (hold & b)) ||
+            (( trigger & b) && (hold & a))) ? qtrue : qfalse;
+}
+
+/* Should the accept button raise the OSK instead of acting as Enter?
+ *
+ * True wherever the text has somewhere to go: the console or chat prompt, or a
+ * menu text field that an IME-aware ui.qvm has named through ui_ime_target
+ * (the QVM sets it on focus and clears it on blur, so this tracks the caret).
+ * A menu with no field focused keeps A as Enter for navigation, and with a
+ * stock ui.qvm the target is never set, so menus behave exactly as before. */
+static qboolean OSK_AcceptRaises(void)
+{
+    int catcher = Key_GetCatcher();
+
+    if (catcher & (KEYCATCH_CONSOLE | KEYCATCH_MESSAGE))
+        return qtrue;
+
+    if (catcher & (KEYCATCH_UI | KEYCATCH_CGAME)) {
+        const char *target = Cvar_VariableString("ui_ime_target");
+        if (target && target[0] && Q_stricmp(target, "donothing") != 0)
+            return qtrue;
+    }
+
+    return qfalse;
+}
+
 /* Set a default bind only if the key is currently unbound */
 static void SetDefaultBind(int key, const char *binding)
 {
@@ -353,14 +387,6 @@ static void PollVPAD(qboolean in_menu)
     if (samples <= 0 || error != VPAD_READ_SUCCESS)
         return;
 
-    /* OSK owns the GamePad while open -- it consumes this sample whole, so no
-     * normal button/stick/touch mapping runs and nothing leaks into the field. */
-    if (WiiU_OSK_IsActive()) {
-        WiiU_OSK_Frame(&status);
-        touch_prev_valid = qfalse;   /* don't fake a huge delta when it closes */
-        return;
-    }
-
     /* Text entry follows the PS3/PS4 ports' shape:
      *   L3 + X  -> toggle the console
      *   A       -> raise the OSK while the console/chat prompt has the catcher
@@ -378,10 +404,9 @@ static void PollVPAD(qboolean in_menu)
         status.release &= ~(VPAD_BUTTON_X | VPAD_BUTTON_STICK_L);
     }
 
-    /* A opens the OSK once the console or chat prompt is up -- that prompt is
-     * unusable without it. Menus are excluded: A stays Enter for navigation. */
-    if ((Key_GetCatcher() & (KEYCATCH_CONSOLE | KEYCATCH_MESSAGE)) &&
-        (status.trigger & VPAD_BUTTON_A)) {
+    /* A opens the OSK wherever text can land -- console/chat prompt, or a
+     * focused menu field. See OSK_AcceptRaises(). */
+    if (OSK_AcceptRaises() && (status.trigger & VPAD_BUTTON_A)) {
         ReleaseAllKeys();
         WiiU_OSK_Toggle();
         status.trigger &= ~VPAD_BUTTON_A;
@@ -499,7 +524,36 @@ static void PollKPAD(qboolean in_menu)
             ReleaseAllKeys();
         }
 
+        /* A raises the OSK wherever text can land -- same rule as the GamePad. */
+        qboolean textPrompt = OSK_AcceptRaises();
+
         if (status.extensionType == WPAD_EXT_PRO_CONTROLLER) {
+            /* Console: L3 + X. OSK: L3 + B. Identical to the GamePad. */
+            if (ComboEdge(status.pro.trigger, status.pro.hold,
+                          WPAD_PRO_BUTTON_STICK_L, WPAD_PRO_BUTTON_X)) {
+                ReleaseAllKeys();
+                Cbuf_ExecuteText(EXEC_APPEND, "toggleconsole\n");
+                status.pro.trigger &= ~(WPAD_PRO_BUTTON_STICK_L | WPAD_PRO_BUTTON_X);
+                status.pro.release &= ~(WPAD_PRO_BUTTON_STICK_L | WPAD_PRO_BUTTON_X);
+            }
+            if (ComboEdge(status.pro.trigger, status.pro.hold,
+                          WPAD_PRO_BUTTON_STICK_L, WPAD_PRO_BUTTON_B)) {
+                ReleaseAllKeys();
+                WiiU_OSK_Toggle();
+                if (WiiU_OSK_IsActive())
+                    return;
+                status.pro.trigger &= ~(WPAD_PRO_BUTTON_STICK_L | WPAD_PRO_BUTTON_B);
+                status.pro.release &= ~(WPAD_PRO_BUTTON_STICK_L | WPAD_PRO_BUTTON_B);
+            }
+            if (textPrompt && (status.pro.trigger & WPAD_PRO_BUTTON_A)) {
+                ReleaseAllKeys();
+                WiiU_OSK_Toggle();
+                if (WiiU_OSK_IsActive())
+                    return;
+                status.pro.trigger &= ~WPAD_PRO_BUTTON_A;
+                status.pro.release &= ~WPAD_PRO_BUTTON_A;
+            }
+
             ProcessButtons(proButtons, PRO_BUTTON_COUNT,
                            status.pro.trigger, status.pro.release, in_menu);
 
@@ -524,6 +578,33 @@ static void PollKPAD(qboolean in_menu)
             }
 
         } else if (status.extensionType == WPAD_EXT_CLASSIC) {
+            /* No stick clicks on this pad, so the GamePad's L3 combos don't
+             * exist here -- console is ZL + ZR, OSK is ZL + B. */
+            if (ComboEdge(status.classic.trigger, status.classic.hold,
+                          WPAD_CLASSIC_BUTTON_ZL, WPAD_CLASSIC_BUTTON_ZR)) {
+                ReleaseAllKeys();
+                Cbuf_ExecuteText(EXEC_APPEND, "toggleconsole\n");
+                status.classic.trigger &= ~(WPAD_CLASSIC_BUTTON_ZL | WPAD_CLASSIC_BUTTON_ZR);
+                status.classic.release &= ~(WPAD_CLASSIC_BUTTON_ZL | WPAD_CLASSIC_BUTTON_ZR);
+            }
+            if (ComboEdge(status.classic.trigger, status.classic.hold,
+                          WPAD_CLASSIC_BUTTON_ZL, WPAD_CLASSIC_BUTTON_B)) {
+                ReleaseAllKeys();
+                WiiU_OSK_Toggle();
+                if (WiiU_OSK_IsActive())
+                    return;
+                status.classic.trigger &= ~(WPAD_CLASSIC_BUTTON_ZL | WPAD_CLASSIC_BUTTON_B);
+                status.classic.release &= ~(WPAD_CLASSIC_BUTTON_ZL | WPAD_CLASSIC_BUTTON_B);
+            }
+            if (textPrompt && (status.classic.trigger & WPAD_CLASSIC_BUTTON_A)) {
+                ReleaseAllKeys();
+                WiiU_OSK_Toggle();
+                if (WiiU_OSK_IsActive())
+                    return;
+                status.classic.trigger &= ~WPAD_CLASSIC_BUTTON_A;
+                status.classic.release &= ~WPAD_CLASSIC_BUTTON_A;
+            }
+
             ProcessButtons(classicButtons, CLASSIC_BUTTON_COUNT,
                            status.classic.trigger, status.classic.release, in_menu);
 
@@ -547,6 +628,33 @@ static void PollKPAD(qboolean in_menu)
             }
 
         } else if (status.extensionType == WPAD_EXT_NUNCHUK) {
+            /* This pad had no console access at all before the OSK landed --
+             * K_CONSOLE never appears in wiimoteButtons. Console is 1 + Minus,
+             * OSK is 1 + 2. Home + Minus stays the quit combo. */
+            if (ComboEdge(status.trigger, status.hold,
+                          WPAD_BUTTON_1, WPAD_BUTTON_MINUS)) {
+                ReleaseAllKeys();
+                Cbuf_ExecuteText(EXEC_APPEND, "toggleconsole\n");
+                status.trigger &= ~(WPAD_BUTTON_1 | WPAD_BUTTON_MINUS);
+                status.release &= ~(WPAD_BUTTON_1 | WPAD_BUTTON_MINUS);
+            }
+            if (ComboEdge(status.trigger, status.hold, WPAD_BUTTON_1, WPAD_BUTTON_2)) {
+                ReleaseAllKeys();
+                WiiU_OSK_Toggle();
+                if (WiiU_OSK_IsActive())
+                    return;
+                status.trigger &= ~(WPAD_BUTTON_1 | WPAD_BUTTON_2);
+                status.release &= ~(WPAD_BUTTON_1 | WPAD_BUTTON_2);
+            }
+            if (textPrompt && (status.trigger & WPAD_BUTTON_A)) {
+                ReleaseAllKeys();
+                WiiU_OSK_Toggle();
+                if (WiiU_OSK_IsActive())
+                    return;
+                status.trigger &= ~WPAD_BUTTON_A;
+                status.release &= ~WPAD_BUTTON_A;
+            }
+
             /* Wiimote's own buttons (top-level hold/trigger/release) */
             ProcessButtons(wiimoteButtons, WIIMOTE_BUTTON_COUNT,
                            status.trigger, status.release, in_menu);
@@ -624,6 +732,137 @@ static void PollKPAD(qboolean in_menu)
 }
 
 /* ----------------------------------------------------------------
+ * OSK input gathering
+ *
+ * While the keyboard is up every pad is reduced to a single controller-neutral
+ * oskInput_t and nothing else runs, so no button leaks into the game or the
+ * text field. Edges are OR'd across pads, so a GamePad and a Wii Remote can
+ * drive the same keyboard at once.
+ * ---------------------------------------------------------------- */
+
+/* Strongest deflection across all pads wins, so an idle stick on one pad can't
+ * cancel out a real one on another. */
+static void OSK_TakeNav(oskInput_t *in, float x, float y)
+{
+    if (fabsf(x) > fabsf(in->navX)) in->navX = x;
+    if (fabsf(y) > fabsf(in->navY)) in->navY = y;
+}
+
+static void OSK_GatherVPAD(oskInput_t *in)
+{
+    VPADStatus status;
+    VPADReadError error = VPAD_READ_SUCCESS;
+    VPADTouchData tp;
+
+    if (VPADRead(VPAD_CHAN_0, &status, 1, &error) <= 0 || error != VPAD_READ_SUCCESS)
+        return;
+
+    if (status.trigger & VPAD_BUTTON_LEFT)  in->pressLeft   = qtrue;
+    if (status.trigger & VPAD_BUTTON_RIGHT) in->pressRight  = qtrue;
+    if (status.trigger & VPAD_BUTTON_UP)    in->pressUp     = qtrue;
+    if (status.trigger & VPAD_BUTTON_DOWN)  in->pressDown   = qtrue;
+    if (status.trigger & VPAD_BUTTON_A)     in->pressAccept = qtrue;
+    if (status.trigger & VPAD_BUTTON_B)     in->pressBack   = qtrue;
+    if (status.trigger & VPAD_BUTTON_X)     in->pressSpace  = qtrue;
+    if (status.trigger & VPAD_BUTTON_Y)     in->pressShift  = qtrue;
+    if (status.trigger & VPAD_BUTTON_PLUS)  in->pressOk     = qtrue;
+    if (status.trigger & VPAD_BUTTON_MINUS) in->pressCancel = qtrue;
+
+    OSK_TakeNav(in, status.leftStick.x, status.leftStick.y);
+
+    /* Touch taps. Asked for in 854x480 so only X needs rescaling into the
+     * 640-wide virtual screen; SCR_AdjustFrom640 is a pure stretch (its
+     * widescreen branch is #if 0), so this maps linearly with no letterbox. */
+    VPADGetTPCalibratedPointEx(VPAD_CHAN_0, VPAD_TP_854X480, &tp, &status.tpNormal);
+
+    if (tp.touched && tp.validity == VPAD_VALID) {
+        /* Down edge only -- holding a finger down must not autofire the key. */
+        if (!osk_touch_prev) {
+            in->cursorPress = qtrue;
+            in->cursorX = (float)tp.x * (640.0f / 854.0f);
+            in->cursorY = (float)tp.y;
+        }
+        osk_touch_prev = qtrue;
+    } else {
+        osk_touch_prev = qfalse;
+    }
+}
+
+static void OSK_GatherKPAD(oskInput_t *in)
+{
+    int ch;
+
+    for (ch = 0; ch < MAX_KPAD_CHANNELS; ch++) {
+        KPADStatus status;
+        KPADError error = KPAD_ERROR_OK;
+
+        if (KPADReadEx((KPADChan)ch, &status, 1, &error) == 0 || error != KPAD_ERROR_OK)
+            continue;
+
+        if (status.extensionType == WPAD_EXT_PRO_CONTROLLER) {
+            uint32_t t = status.pro.trigger;
+            if (t & WPAD_PRO_BUTTON_LEFT)  in->pressLeft   = qtrue;
+            if (t & WPAD_PRO_BUTTON_RIGHT) in->pressRight  = qtrue;
+            if (t & WPAD_PRO_BUTTON_UP)    in->pressUp     = qtrue;
+            if (t & WPAD_PRO_BUTTON_DOWN)  in->pressDown   = qtrue;
+            if (t & WPAD_PRO_BUTTON_A)     in->pressAccept = qtrue;
+            if (t & WPAD_PRO_BUTTON_B)     in->pressBack   = qtrue;
+            if (t & WPAD_PRO_BUTTON_X)     in->pressSpace  = qtrue;
+            if (t & WPAD_PRO_BUTTON_Y)     in->pressShift  = qtrue;
+            if (t & WPAD_PRO_BUTTON_PLUS)  in->pressOk     = qtrue;
+            if (t & WPAD_PRO_BUTTON_MINUS) in->pressCancel = qtrue;
+            OSK_TakeNav(in, status.pro.leftStick.x, status.pro.leftStick.y);
+
+        } else if (status.extensionType == WPAD_EXT_CLASSIC) {
+            uint32_t t = status.classic.trigger;
+            if (t & WPAD_CLASSIC_BUTTON_LEFT)  in->pressLeft   = qtrue;
+            if (t & WPAD_CLASSIC_BUTTON_RIGHT) in->pressRight  = qtrue;
+            if (t & WPAD_CLASSIC_BUTTON_UP)    in->pressUp     = qtrue;
+            if (t & WPAD_CLASSIC_BUTTON_DOWN)  in->pressDown   = qtrue;
+            if (t & WPAD_CLASSIC_BUTTON_A)     in->pressAccept = qtrue;
+            if (t & WPAD_CLASSIC_BUTTON_B)     in->pressBack   = qtrue;
+            if (t & WPAD_CLASSIC_BUTTON_X)     in->pressSpace  = qtrue;
+            if (t & WPAD_CLASSIC_BUTTON_Y)     in->pressShift  = qtrue;
+            if (t & WPAD_CLASSIC_BUTTON_PLUS)  in->pressOk     = qtrue;
+            if (t & WPAD_CLASSIC_BUTTON_MINUS) in->pressCancel = qtrue;
+            OSK_TakeNav(in, status.classic.leftStick.x, status.classic.leftStick.y);
+
+        } else if (status.extensionType == WPAD_EXT_NUNCHUK) {
+            /* Held upright, so the d-pad reads naturally. B is the underside
+             * trigger -- backspace here, since it's the easiest to reach. */
+            uint32_t t = status.trigger;
+            if (t & WPAD_BUTTON_LEFT)  in->pressLeft   = qtrue;
+            if (t & WPAD_BUTTON_RIGHT) in->pressRight  = qtrue;
+            if (t & WPAD_BUTTON_UP)    in->pressUp     = qtrue;
+            if (t & WPAD_BUTTON_DOWN)  in->pressDown   = qtrue;
+            if (t & WPAD_BUTTON_A)     in->pressAccept = qtrue;
+            if (t & WPAD_BUTTON_B)     in->pressBack   = qtrue;
+            if (t & WPAD_BUTTON_1)     in->pressSpace  = qtrue;
+            if (t & WPAD_BUTTON_2)     in->pressShift  = qtrue;
+            if (t & WPAD_BUTTON_PLUS)  in->pressOk     = qtrue;
+            if (t & WPAD_BUTTON_MINUS) in->pressCancel = qtrue;
+            OSK_TakeNav(in, status.nunchuk.stick.x, status.nunchuk.stick.y);
+
+            /* IR pointer becomes the cursor: hover a key, press A to type it.
+             * pos is -1..1 and already Y-down (PollKPAD feeds it to SE_MOUSE
+             * without the negation the sticks need), so it maps straight over. */
+            if (status.posValid) {
+                float px = status.pos.x;
+                float py = status.pos.y;
+                if (px >  1.0f) px =  1.0f;
+                if (px < -1.0f) px = -1.0f;
+                if (py >  1.0f) py =  1.0f;
+                if (py < -1.0f) py = -1.0f;
+
+                in->cursorValid = qtrue;
+                in->cursorX = (px + 1.0f) * 0.5f * 640.0f;
+                in->cursorY = (py + 1.0f) * 0.5f * 480.0f;
+            }
+        }
+    }
+}
+
+/* ----------------------------------------------------------------
  * Public interface
  * ---------------------------------------------------------------- */
 
@@ -695,10 +934,38 @@ void WiiU_Input_Frame(void)
         prev_in_menu = in_menu;
     }
 
+    /* Clear ui_ime_target as the menu opens, so a field name left over from a
+     * previous visit can't route the OSK to the wrong cvar. Ported from the PS3
+     * port; harmless when the loaded ui.qvm has no IME hooks at all. Note this
+     * tracks the UI catcher specifically, not InMenu(), which also counts the
+     * console. */
+    {
+        static qboolean prev_in_ui;
+        qboolean in_ui = (Key_GetCatcher() &
+                          (KEYCATCH_UI | KEYCATCH_CGAME)) ? qtrue : qfalse;
+        if (in_ui && !prev_in_ui)
+            Cvar_Set("ui_ime_target", "");
+        prev_in_ui = in_ui;
+    }
+
+    /* The OSK takes the whole frame's input across every pad -- no normal
+     * mapping runs, so nothing leaks into the game or the text field. */
+    if (WiiU_OSK_IsActive()) {
+        oskInput_t osk;
+        memset(&osk, 0, sizeof(osk));
+        OSK_GatherVPAD(&osk);
+        OSK_GatherKPAD(&osk);
+        WiiU_OSK_Frame(&osk);
+
+        /* Stale deltas would fire as a huge jump on the frame it closes. */
+        touch_prev_valid = qfalse;
+        memset(pointer_prev_valid, 0, sizeof(pointer_prev_valid));
+        WiiU_Input_RumbleTick();
+        return;
+    }
+
     PollVPAD(in_menu);
-    /* GamePad-only while the OSK is up: a second pad would fight its cursor. */
-    if (!WiiU_OSK_IsActive())
-        PollKPAD(in_menu);
+    PollKPAD(in_menu);
     WiiU_Input_RumbleTick();
 }
 

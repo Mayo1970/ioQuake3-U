@@ -18,8 +18,11 @@ build_client_classic/
 *.pk3
 qkey
 
-# CLASSIC's own bundled pak is our content, not retail data -- keep it tracked
+# The bundled per-flavor paks under fixes/ are our content, not retail data --
+# keep them tracked (baseq3/pak9-wiiu.pk3, baseq3/zpack-classic.pk3,
+# missionpack/pak4-wiiu.pk3).
 !fixes/baseq3/*.pk3
+!fixes/missionpack/*.pk3
 
 # AI tooling
 .claude/

@@ -140,7 +140,7 @@ Known renderer gaps:
 | `con_wiiu.c` | SD log (`log.txt`/`log_ta.txt`/`log_oa.txt`/`log_classic.txt`/`log_ef.txt`, per-line `fopen`/`fprintf`/`fclose` — durable across crashes) + `WHBLogUdp` |
 | `net_wiiu.c` | Real UDP/IPv4 over `nsysnet` BSD sockets |
 | `wiiu_account.cpp`/`.h` | `nn::act` Mii nickname lookup — C++-only API, read-only/non-blocking (unlike `nn::swkbd`, which hangs — see Hard rules) |
-| `wiiu_classic_extract.c` | CLASSIC-only: extracts the embedded `zpack-classic.pk3` byte array to SD on first boot |
+| `wiiu_pak_extract.c` | Extracts this flavor's embedded pak byte array to SD on first boot (q3 `baseq3/pak9-wiiu.pk3`, ta `missionpack/pak4-wiiu.pk3`, classic `baseq3/zpack-classic.pk3`; oa/ef have none). Source pk3 + destination picked by the `BUNDLED_PAK` block in `Makefile.client`, which generates `bundled_pak_embedded.h` |
 | `code/input/wiiu_input.c` | VPAD (GamePad) + KPAD (Pro/Classic Controller) polling, stick filtering, DRC touch-as-mouse, rumble |
 | `code/audio/wiiu_snd.c` | AX mixer backend, TV+DRC bus mix |
 

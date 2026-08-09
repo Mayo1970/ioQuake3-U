@@ -11,13 +11,12 @@
  * per-character SE_CHAR, K_ENTER for auto-submit, and K_END + 80 backspaces to
  * wipe a menu field. Those semantics are load-bearing -- don't "simplify" them.
  *
- * GamePad only. Pro/Classic/Wiimote input is suppressed while this is up rather
- * than fighting the cursor; the GamePad is always present anyway.
+ * Controller-agnostic: wiiu_input.c reduces every pad to one oskInput_t per
+ * frame, so GamePad touch and Wii Remote IR both arrive as the same absolute
+ * cursor and nothing here needs to know which pad is driving.
  */
 
 #include <string.h>
-
-#include <vpad/input.h>
 
 #include "qcommon/q_shared.h"
 #include "qcommon/qcommon.h"
@@ -65,11 +64,6 @@
 #define OSK_REPEAT_FIRST 300
 #define OSK_REPEAT_NEXT  90
 
-/* Calibrated touch is requested in 854x480 space (VPAD_TP_854X480), so only X
- * needs rescaling into the 640-wide virtual screen. */
-#define OSK_TOUCH_W     854.0f
-#define OSK_TOUCH_H     480.0f
-
 static const char *osk_rows_lower[OSK_CHAR_ROWS] = {
     "1234567890-=",
     "qwertyuiop[]",
@@ -115,11 +109,19 @@ static qboolean osk_prepend_slash;
 static qboolean osk_field_clear;
 static qboolean osk_run_as_say;     /* in-game, no catcher: run "say ..." directly */
 
+/* ui_ime_target snapshotted at open time. Non-empty means the UI told us which
+ * field is focused, so the result goes back through the ui_ime_* cvars instead
+ * of being typed blind. Empty means no IME-aware UI is loaded. */
+static char     osk_ime_field[64];
+
 static int      osk_row, osk_col;
 
 static int      osk_nav_dir_x, osk_nav_dir_y;
 static int      osk_nav_next_ms;
-static qboolean osk_touch_prev;
+
+/* Last absolute cursor (DRC touch / Wii Remote IR), kept for drawing. */
+static qboolean osk_cursor_valid;
+static float    osk_cursor_x, osk_cursor_y;
 
 /* ----------------------------------------------------------------
  * Helpers
@@ -236,9 +238,23 @@ static void OSK_RunAsSay(void)
         Cbuf_ExecuteText(EXEC_APPEND, va("say \"%s\"\n", clean));
 }
 
+/* Hand the result to an IME-aware UI. Team Arena's g_editingField path never
+ * fires here, so write the field cvars directly and let the QVM pick them up on
+ * its next frame -- the same handshake ps3_osk.c uses. osk_text is already
+ * filtered to printable ASCII by OSK_AppendChar. */
+static void OSK_DeliverToImeField(void)
+{
+    Cvar_Set("ui_ime_text",  osk_text);
+    Cvar_Set("ui_ime_field", osk_ime_field);
+    Cvar_Set("ui_ime_done",  "1");
+    osk_ime_field[0] = '\0';
+}
+
 static void OSK_Commit(void)
 {
-    if (osk_run_as_say)
+    if (osk_ime_field[0])
+        OSK_DeliverToImeField();
+    else if (osk_run_as_say)
         OSK_RunAsSay();
     else
         OSK_InjectResult();
@@ -321,12 +337,13 @@ static void OSK_Open(void)
     osk_col   = 0;
     osk_nav_dir_x = osk_nav_dir_y = 0;
     osk_nav_next_ms = 0;
-    osk_touch_prev = qfalse;
+    osk_cursor_valid = qfalse;
 
     osk_auto_submit   = qfalse;
     osk_prepend_slash = qfalse;
     osk_field_clear   = qfalse;
     osk_run_as_say    = qfalse;
+    osk_ime_field[0]  = '\0';
 
     if (catcher & KEYCATCH_CONSOLE) {
         /* '/' so the console treats the line as a command, then Enter. */
@@ -339,12 +356,21 @@ static void OSK_Open(void)
         osk_maxlen = 128;
         osk_auto_submit = qtrue;
     } else if (catcher & (KEYCATCH_UI | KEYCATCH_CGAME)) {
-        /* Types into whichever field ui.qvm has focused. We can't tell which one
-         * that is (stock ui.qvm, no ui_ime_target hook), so wipe it first and
-         * leave submitting to the user. */
-        Q_strncpyz(osk_title, "Enter Text", sizeof(osk_title));
+        const char *target = Cvar_VariableString("ui_ime_target");
+
         osk_maxlen = 80;
-        osk_field_clear = qtrue;
+
+        if (target && target[0] && Q_stricmp(target, "donothing") != 0) {
+            /* An IME-aware ui.qvm named the focused field, so deliver exactly
+             * to it via the ui_ime_* cvars -- no blind typing, no field wipe. */
+            Q_strncpyz(osk_ime_field, target, sizeof(osk_ime_field));
+            Com_sprintf(osk_title, sizeof(osk_title), "Enter: %s", target);
+        } else {
+            /* Stock ui.qvm, or nothing focused: fall back to typing blind into
+             * whatever has focus, wiping it first. */
+            Q_strncpyz(osk_title, "Enter Text", sizeof(osk_title));
+            osk_field_clear = qtrue;
+        }
     } else {
         Q_strncpyz(osk_title, "Say", sizeof(osk_title));
         osk_maxlen = 128;
@@ -394,60 +420,62 @@ static int OSK_StickStep(float v, int *dir)
     return 0;
 }
 
-static void OSK_HandleTouch(const VPADStatus *status)
+/* Move the selection to the key under an absolute cursor. Returns false when
+ * the cursor is off the grid, which leaves the previous selection alone. */
+static qboolean OSK_SelectAt(float cx, float cy)
 {
-    VPADTouchData tp;
-    qboolean down;
-    float tx, ty;
     int row, col;
-
-    VPADGetTPCalibratedPointEx(VPAD_CHAN_0, VPAD_TP_854X480, &tp, &status->tpNormal);
-
-    down = (tp.touched && tp.validity == VPAD_VALID) ? qtrue : qfalse;
-
-    /* Act on the touch-down edge only -- press-and-hold must not autofire keys. */
-    if (!down || osk_touch_prev) {
-        osk_touch_prev = down;
-        return;
-    }
-    osk_touch_prev = qtrue;
-
-    tx = (float)tp.x * (640.0f / OSK_TOUCH_W);
-    ty = (float)tp.y * (480.0f / OSK_TOUCH_H);
 
     for (row = 0; row < OSK_ROWS; row++) {
         int len = OSK_RowLen(row);
         for (col = 0; col < len; col++) {
             float kx, ky, kw, kh;
             OSK_KeyRect(row, col, &kx, &ky, &kw, &kh);
-            if (tx >= kx && tx < kx + kw && ty >= ky && ty < ky + kh) {
+            if (cx >= kx && cx < kx + kw && cy >= ky && cy < ky + kh) {
                 osk_row = row;
                 osk_col = col;
-                OSK_PressSelected();
-                return;
+                return qtrue;
             }
         }
     }
+    return qfalse;
 }
 
-void WiiU_OSK_Frame(const VPADStatus *status)
+void WiiU_OSK_Frame(const oskInput_t *in)
 {
-    uint32_t trig = status->trigger;
     int now = Com_Milliseconds();
     int stepX, stepY;
 
     if (!osk_active)
         return;
 
-    /* D-pad: one step per press. */
-    if (trig & VPAD_BUTTON_LEFT)  OSK_MoveCol(-1);
-    if (trig & VPAD_BUTTON_RIGHT) OSK_MoveCol(1);
-    if (trig & VPAD_BUTTON_UP)    OSK_MoveRow(-1);
-    if (trig & VPAD_BUTTON_DOWN)  OSK_MoveRow(1);
+    /* Absolute cursor (Wii Remote IR) hovers: the selection tracks the pointer,
+     * so the accept button then types whatever is under it. */
+    osk_cursor_valid = in->cursorValid;
+    if (in->cursorValid) {
+        osk_cursor_x = in->cursorX;
+        osk_cursor_y = in->cursorY;
+        OSK_SelectAt(in->cursorX, in->cursorY);
+    }
 
-    /* Left stick: same movement with auto-repeat. */
-    stepX = OSK_StickStep(status->leftStick.x, &osk_nav_dir_x);
-    stepY = OSK_StickStep(status->leftStick.y, &osk_nav_dir_y);
+    /* Tap edge (DRC touch): select and activate in one go -- no hover phase. */
+    if (in->cursorPress) {
+        if (OSK_SelectAt(in->cursorX, in->cursorY)) {
+            OSK_PressSelected();
+            if (!osk_active)
+                return;
+        }
+    }
+
+    /* D-pad: one step per press. */
+    if (in->pressLeft)  OSK_MoveCol(-1);
+    if (in->pressRight) OSK_MoveCol(1);
+    if (in->pressUp)    OSK_MoveRow(-1);
+    if (in->pressDown)  OSK_MoveRow(1);
+
+    /* Stick: same movement with auto-repeat. */
+    stepX = OSK_StickStep(in->navX, &osk_nav_dir_x);
+    stepY = OSK_StickStep(in->navY, &osk_nav_dir_y);
 
     if (stepX == 0 && stepY == 0) {
         osk_nav_next_ms = 0;
@@ -461,24 +489,23 @@ void WiiU_OSK_Frame(const VPADStatus *status)
         osk_nav_next_ms = now + OSK_REPEAT_NEXT;
     }
 
-    /* Buttons. Shift lives on Y as well as its own key so it's reachable
+    /* Buttons. Shift has its own button as well as a grid key so it's reachable
      * without crossing the grid. */
-    if (trig & VPAD_BUTTON_A) {
+    if (in->pressAccept) {
         OSK_PressSelected();
         if (!osk_active)
-            return;             /* hit OK/CANCEL -- don't let PLUS commit twice */
+            return;             /* hit OK/CANCEL -- don't let pressOk commit twice */
     }
-    if (trig & VPAD_BUTTON_B)     OSK_Backspace();
-    if (trig & VPAD_BUTTON_X)     OSK_AppendChar(' ');
-    if (trig & VPAD_BUTTON_Y)     osk_shift = osk_shift ? qfalse : qtrue;
-    if (trig & VPAD_BUTTON_PLUS)  OSK_Commit();
-    if (trig & VPAD_BUTTON_MINUS) osk_active = qfalse;
+    if (in->pressBack)   OSK_Backspace();
+    if (in->pressSpace)  OSK_AppendChar(' ');
+    if (in->pressShift)  osk_shift = osk_shift ? qfalse : qtrue;
+    if (in->pressOk)     OSK_Commit();
+    if (in->pressCancel) osk_active = qfalse;
 
     if (!osk_active)
-        return;     /* commit/cancel closed it; don't touch-test a dead keyboard */
+        return;
 
     OSK_ClampCursor();
-    OSK_HandleTouch(status);
 }
 
 /* ----------------------------------------------------------------
@@ -617,7 +644,13 @@ void WiiU_OSK_Draw(void)
     /* Legend */
     OSK_DrawString(OSK_PANEL_X + OSK_PAD, OSK_PANEL_Y + OSK_PANEL_H + 3.0f,
                    6.0f, 10.0f,
-                   "A type   B bksp   X space   Y shift   + accept   - cancel   touch to tap");
+                   "A type   B bksp   space/shift   + accept   - cancel   point or tap");
+
+    /* Wii Remote pointer. Touch has no hover state so it never sets this. */
+    if (osk_cursor_valid) {
+        SCR_FillRect(osk_cursor_x - 5.0f, osk_cursor_y - 1.0f, 10.0f, 2.0f, osk_color_sel);
+        SCR_FillRect(osk_cursor_x - 1.0f, osk_cursor_y - 5.0f, 2.0f, 10.0f, osk_color_sel);
+    }
 
     re.SetColor(NULL);
 }

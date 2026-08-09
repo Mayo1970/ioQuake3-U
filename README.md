@@ -112,23 +112,33 @@ click**.
 ### On-screen keyboard
 
 The Wii U's system keyboard is unusable from homebrew, so this port draws its
-own. Raise it with **left stick click + B** to chat, or open the console with
-**left stick click + X** and then press **A**. It also types into menu text
-fields — open a menu, click into the field, then raise the keyboard.
+own. Every controller can raise and drive it, and several can type at once. It
+also types into menu text fields — open a menu, click into the field, then
+raise the keyboard.
+
+| Controller | Open the keyboard | Open the console |
+|---|---|---|
+| GamePad / Pro Controller | Left stick click + **B** | Left stick click + **X** |
+| Classic Controller | **ZL** + **B** | **ZL** + **ZR** |
+| Wii Remote + Nunchuk | **1** + **2** | **1** + **Minus** |
+
+With the console already open, the accept button (**A**) raises the keyboard on
+any controller.
 
 | Input | Action |
 |---|---|
 | **D-pad / left stick** | Move the selection (the stick auto-repeats) |
 | **DRC touchscreen** | Tap a key directly |
+| **Wii Remote pointer** | Hover a key, then **A** to type it |
 | **A** | Type the selected key |
 | **B** | Backspace |
-| **X** | Space |
-| **Y** | Shift |
+| **X** (**1** on Wii Remote) | Space |
+| **Y** (**2** on Wii Remote) | Shift |
 | **Plus** | Accept |
 | **Minus** | Cancel |
 
-Only the GamePad drives the keyboard; other controllers are ignored while it's
-up so they can't fight the selection.
+Wii Remote pointing needs a USB-powered Sensor Bar, same as pointer aim. Without
+one, use the d-pad and Nunchuk stick.
 
 ### Wii Remote + Nunchuk
 
